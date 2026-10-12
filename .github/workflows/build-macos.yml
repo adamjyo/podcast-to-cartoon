@@ -49,6 +49,7 @@ jobs:
             --hidden-import draw_avatar \
             --hidden-import rhubarb_sync \
             --hidden-import stage \
+            --hidden-import opentoonz_export \
             --hidden-import PIL.ImageTk \
             PodcastApp.py
           PLIST="dist/PodcastProcessor.app/Contents/Info.plist"

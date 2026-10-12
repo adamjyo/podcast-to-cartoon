@@ -23,6 +23,7 @@ from draw_avatar import draw_avatar, draw_background, draw_mouths
 from podcast_processor import process_audio, speakers_in
 from podcast_video import PALETTE, preview_puppet, render_cartoon
 from rhubarb_sync import build_cues
+from opentoonz_export import export_opentoonz, launch_opentoonz
 from stage import PRESETS, forget_set, keep_set, list_sets, load_set, paint_stage
 
 SUPPORT.mkdir(parents=True, exist_ok=True)
@@ -196,6 +197,8 @@ class App:
         self.assign.pack(anchor="w", fill="x", padx=8, pady=4)
         self.video_btn = ttk.Button(episode, text="2. Make cartoon video", command=self.start_video, state="disabled")
         self.video_btn.pack(anchor="w", padx=8, pady=4)
+        self.toonz_btn = ttk.Button(episode, text="3. Open in OpenToonz", command=self.start_opentoonz, state="disabled")
+        self.toonz_btn.pack(anchor="w", padx=8, pady=4)
         self.log = scrolledtext.ScrolledText(episode, height=5, width=70, bg=FIELD, fg=INK, insertbackground=INK, selectbackground="#5c5346", highlightbackground=BG)
         self.log.pack(fill="both", expand=True, pady=6)
         self._build_puppet(puppet)
@@ -447,6 +450,7 @@ class App:
         os.environ["HF_TOKEN"] = token
         self.go.config(state="disabled")
         self.video_btn.config(state="disabled")
+        self.toonz_btn.config(state="disabled")
         self.show_busy("Finding speakers")
         audio = self.audio
         low = int(self.min_sp.get())
@@ -475,6 +479,7 @@ class App:
         self.result = result
         self.go.config(state="normal")
         self.video_btn.config(state="normal")
+        self.toonz_btn.config(state="normal")
         names = speakers_in(result)
         self.show_done(f"{len(names)} speakers found")
         self.write("Speakers: " + ", ".join(names or ["none"]) + "\n")
@@ -513,6 +518,53 @@ class App:
             args=(self.audio, self.result, names, self._cast_for_speakers()),
             daemon=True,
         ).start()
+
+    def start_opentoonz(self):
+        if not self.result or not self.audio:
+            messagebox.showwarning("Find speakers first", "Choose the audio and find the speakers first.")
+            return
+        self.toonz_btn.config(state="disabled")
+        self.show_busy("Preparing OpenToonz")
+        names = {}
+        for sp, var in self.speaker_vars.items():
+            picked = var.get()
+            names[sp] = picked if picked != "(simple card)" else sp
+        threading.Thread(
+            target=self._opentoonz,
+            args=(self.audio, self.result, names, self._cast_for_speakers()),
+            daemon=True,
+        ).start()
+
+    def _opentoonz(self, audio, result, names, cast):
+        try:
+            try:
+                cues = build_cues(audio, result)
+            except Exception:
+                cues = []
+            dest = Path.home() / "Desktop" / "Podcast Processor" / f"{Path(audio).stem}_opentoonz"
+            export_opentoonz(audio, result, names, cast, cues, dest)
+            app = launch_opentoonz(dest)
+            self.root.after(0, lambda: self._opentoonz_done(dest, app))
+        except Exception as exc:
+            self.root.after(0, lambda e=exc: self._fail(e))
+
+    def _opentoonz_done(self, dest, app):
+        self.toonz_btn.config(state="normal")
+        self.show_done("OpenToonz project ready")
+        if app is None:
+            messagebox.showinfo(
+                "OpenToonz is not installed",
+                "The episode is saved here:\n"
+                f"{dest}\n\n"
+                "Install the free OpenToonz app, then click Open in OpenToonz again.",
+            )
+            return
+        messagebox.showinfo(
+            "OpenToonz",
+            "OpenToonz is opening this episode.\n\n"
+            "Each person has a folder of mouth drawings and a lip-sync file. "
+            "Load their pictures, then choose Level, Apply Lip Sync Data to Column, and pick the .dat file in that folder.",
+        )
 
     def _video(self, audio, result, names, cast):
         try:
@@ -737,6 +789,7 @@ class App:
     def _fail(self, exc):
         self.go.config(state="normal")
         self.video_btn.config(state="normal")
+        self.toonz_btn.config(state="normal" if self.result else "disabled")
         self.bar.stop()
         self.bar.config(mode="determinate")
         self.bar["value"] = 0
