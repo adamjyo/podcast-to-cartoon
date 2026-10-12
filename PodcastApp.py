@@ -117,6 +117,7 @@ class App:
         self.xai.grid(row=1, column=1, padx=6, pady=4)
         if cfg.get("xai"):
             self.xai.insert(0, cfg["xai"])
+        ttk.Button(keys, text="Save keys", command=self.save_keys).grid(row=0, column=2, rowspan=2, padx=6)
 
         body = tk.Frame(root, bg=BG)
         body.pack(fill="both", expand=True, padx=12, pady=6)
@@ -176,6 +177,11 @@ class App:
         self._build_puppet(puppet)
         self._build_set(studio)
         self.write("Kept avatars live in this Mac account and can be reused on the next episode.\n")
+        if cfg.get("hf") or cfg.get("xai"):
+            self.write("Saved keys loaded.\n")
+        self.hf.bind("<FocusOut>", lambda _e: self.persist_keys())
+        self.xai.bind("<FocusOut>", lambda _e: self.persist_keys())
+        root.protocol("WM_DELETE_WINDOW", self.close_app)
         self.refresh_cast()
         self.refresh_sets()
 
@@ -188,6 +194,14 @@ class App:
         cfg["hf"] = self.hf.get().strip()
         cfg["xai"] = self.xai.get().strip()
         save_config(cfg)
+
+    def save_keys(self):
+        self.persist_keys()
+        self.write("Keys saved on this Mac. They will be filled in next time you open the app.\n")
+
+    def close_app(self):
+        self.persist_keys()
+        self.root.destroy()
 
     def refresh_cast(self):
         self.cast = list_cast()
