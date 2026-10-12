@@ -6,6 +6,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from rhubarb_sync import mouth_at
+from stage import paint_stage
 
 W, H = 1280, 720
 FPS = 4
@@ -105,7 +106,13 @@ def _card(cast, label, ink, fill, talking_shape):
     return card
 
 
-def render_cartoon(result, audio_path, out_path, names, cast_for_speaker=None, progress=None, cues=None):
+def preview_puppet(cast, shape="closed"):
+    card = _card(cast, (cast or {}).get("name") or "", "#1f2a24", "#fffaf3", shape)
+    card.thumbnail((240, 320))
+    return card
+
+
+def render_cartoon(result, audio_path, out_path, names, cast_for_speaker=None, progress=None, cues=None, background=None):
     import imageio_ffmpeg
 
     segments = result.get("segments") or []
@@ -131,10 +138,11 @@ def render_cartoon(result, audio_path, out_path, names, cast_for_speaker=None, p
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     title_font = _font(28)
     sub_font = _font(26)
+    plate = paint_stage(background, (W, H))
     try:
         for i in range(nframes):
             t = i / FPS
-            img = Image.new("RGB", (W, H), "#f3ecdf")
+            img = plate.copy()
             draw = ImageDraw.Draw(img)
             draw.rectangle((0, 0, W, 86), fill="#1f2a24")
             draw.text((36, 26), "Podcast cartoon", font=title_font, fill="#f6f1e7")
@@ -142,15 +150,21 @@ def render_cartoon(result, audio_path, out_path, names, cast_for_speaker=None, p
             active = (seg or {}).get("speaker")
             n = max(1, len(speakers))
             gap = 24
-            card_w = min(360, int((W - 80 - gap * (n - 1)) / n))
-            total = n * card_w + (n - 1) * gap
-            x0 = (W - total) // 2
+            scales = []
+            for sp in speakers:
+                raw = float((cast_for_speaker.get(sp) or {}).get("puppetScale") or 1)
+                scales.append(min(1.6, max(0.55, raw)))
+            available = W - 80 - gap * (n - 1)
+            widths = [max(140, int(available * scale / sum(scales))) for scale in scales]
+            x = (W - (sum(widths) + gap * (n - 1))) // 2
             for idx, sp in enumerate(speakers):
                 ink, fill = PALETTE[idx % len(PALETTE)]
                 talking = mouth_at(cues, t) if sp == active and cues else ("closed" if sp != active else TALK[(i // 2) % len(TALK)])
                 card = _card(cast_for_speaker.get(sp), labels[sp], ink, fill, talking)
+                card_w = widths[idx]
                 card = card.resize((card_w, int(card.height * card_w / card.width)), Image.LANCZOS)
-                img.paste(card, (x0 + idx * (card_w + gap), 100), card)
+                img.paste(card, (x, 100), card)
+                x += card_w + gap
             draw.rounded_rectangle((60, 580, W - 60, 690), radius=18, fill="#fffaf3", outline="#1f2a24", width=3)
             text = ((seg or {}).get("text") or "").strip()
             who = labels.get(active, "")

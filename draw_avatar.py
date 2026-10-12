@@ -72,6 +72,45 @@ def draw_avatar(photo_path: str, api_key: str, note: str = "") -> bytes:
     return _edit(photo, AVATAR_PROMPT + extra, api_key)
 
 
+def draw_background(note: str, api_key: str) -> bytes:
+    if not api_key.strip():
+        raise RuntimeError("Paste an xAI API key to draw a set.")
+    prompt = (
+        "Hand-drawn ink and watercolor podcast studio background, wide 16:9, empty of people. "
+        "Visible pencil line, soft wash, no text, no watermark, no letters. "
+        + (note.strip() or "A warm room with a wooden table and a window.")
+    )
+    body = json.dumps(
+        {
+            "model": "grok-imagine-image",
+            "prompt": prompt,
+            "response_format": "b64_json",
+        }
+    ).encode()
+    req = urllib.request.Request(
+        "https://api.x.ai/v1/images/generations",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key.strip()}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=180) as res:
+            payload = json.loads(res.read().decode())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:300]
+        raise RuntimeError(f"Drawing the set failed ({exc.code}). {detail}") from exc
+    item = (payload.get("data") or [{}])[0]
+    if item.get("b64_json"):
+        return base64.b64decode(item["b64_json"])
+    if item.get("url"):
+        with urllib.request.urlopen(item["url"], timeout=60) as res:
+            return res.read()
+    raise RuntimeError("No set came back. Try again.")
+
+
 def draw_mouths(avatar_path: str, api_key: str) -> dict:
     sheet = _edit(Path(avatar_path).read_bytes(), MOUTH_PROMPT, api_key)
     return split_mouth_sheet(sheet)

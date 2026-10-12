@@ -78,15 +78,37 @@ def keep_cast(
         for key, blob in mouths.items():
             if key in MOUTH_NAMES and blob:
                 (mouth_dir / f"{key}.png").write_bytes(blob)
+    existing = {}
+    meta_file = _meta_path(folder)
+    if meta_file.exists():
+        try:
+            existing = json.loads(meta_file.read_text())
+        except json.JSONDecodeError:
+            existing = {}
     payload = {
         "name": name or "Unnamed",
         "note": note or "",
         "mouthX": mouth_x,
         "mouthY": mouth_y,
         "mouthScale": mouth_scale,
+        "puppetScale": existing.get("puppetScale", 1),
         "savedAt": time.time(),
     }
     _meta_path(folder).write_text(json.dumps(payload, indent=2))
+    return load_cast(avatar_id)
+
+
+def update_puppet(avatar_id: str, mouth_x: float, mouth_y: float, mouth_scale: float, puppet_scale: float):
+    folder = CAST / avatar_id
+    meta_file = _meta_path(folder)
+    if not meta_file.exists():
+        raise FileNotFoundError(avatar_id)
+    data = json.loads(meta_file.read_text())
+    data["mouthX"] = mouth_x
+    data["mouthY"] = mouth_y
+    data["mouthScale"] = mouth_scale
+    data["puppetScale"] = puppet_scale
+    meta_file.write_text(json.dumps(data, indent=2))
     return load_cast(avatar_id)
 
 

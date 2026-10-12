@@ -2,7 +2,7 @@
 
 Mac app for a mixed podcast: it separates the speakers, keeps a cast of drawn avatars, and writes a cartoon whose mouths follow the recording.
 
-Avatars are stored on your Mac in `~/Library/Application Support/PodcastProcessor/cast`. Add a headshot once, draw it, and reuse that person on the next episode. Mouth timing comes from [Rhubarb Lip Sync](https://github.com/DanielSWolf/rhubarb-lip-sync), which is bundled in the app.
+The Puppet tab places each mouth and sets how big that person stands. The Set tab picks a room, or draws one from a short description. Both are saved on this Mac and reused on the next episode. Avatars live in `~/Library/Application Support/PodcastProcessor/cast`, sets in `backgrounds` beside that. Mouth timing comes from [Rhubarb Lip Sync](https://github.com/DanielSWolf/rhubarb-lip-sync), which is bundled in the app.
 
 ## Download
 

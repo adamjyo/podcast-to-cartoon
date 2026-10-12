@@ -47,6 +47,8 @@ jobs:
             --hidden-import cast_library \
             --hidden-import draw_avatar \
             --hidden-import rhubarb_sync \
+            --hidden-import stage \
+            --hidden-import PIL.ImageTk \
             PodcastApp.py
           codesign --force --deep --sign - "dist/PodcastProcessor.app" || true
           ditto -c -k --keepParent "dist/PodcastProcessor.app" PodcastProcessor-macOS.zip
