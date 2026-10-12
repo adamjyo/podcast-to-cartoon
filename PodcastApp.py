@@ -39,12 +39,43 @@ def save_config(data):
     CONFIG.write_text(json.dumps(data))
 
 
+BG = "#161616"
+INK = "#f5f5f7"
+FIELD = "#2a2a2a"
+LINE = "#3f3f3f"
+
+
+def apply_dark(root):
+    root.configure(bg=BG)
+    style = ttk.Style(root)
+    style.theme_use("clam")
+    style.configure(".", background=BG, foreground=INK, fieldbackground=FIELD, bordercolor=LINE, lightcolor=LINE, darkcolor=LINE, troughcolor="#3a3a3a")
+    style.configure("TFrame", background=BG)
+    style.configure("TLabel", background=BG, foreground=INK)
+    style.configure("TButton", background=FIELD, foreground=INK, padding=(10, 6), bordercolor=LINE)
+    style.map("TButton", background=[("active", "#3a3a3c"), ("disabled", "#242424")], foreground=[("disabled", "#8e8e93"), ("active", INK)])
+    style.configure("TNotebook", background=BG, borderwidth=0)
+    style.configure("TNotebook.Tab", background=FIELD, foreground=INK, padding=(14, 6))
+    style.map("TNotebook.Tab", background=[("selected", "#3a3a3c")], foreground=[("selected", INK)])
+    style.configure("TEntry", fieldbackground=FIELD, foreground=INK, insertcolor=INK)
+    style.configure("TSpinbox", fieldbackground=FIELD, foreground=INK, background=FIELD, arrowcolor=INK)
+    style.configure("TCombobox", fieldbackground=FIELD, foreground=INK, background=FIELD, arrowcolor=INK)
+    style.map("TCombobox", fieldbackground=[("readonly", FIELD)], foreground=[("readonly", INK)])
+    style.configure("TRadiobutton", background=BG, foreground=INK)
+    style.map("TRadiobutton", background=[("active", BG)], foreground=[("active", INK)])
+    root.option_add("*Foreground", INK)
+    root.option_add("*Background", BG)
+    root.option_add("*insertBackground", INK)
+    root.option_add("*selectBackground", "#5c5346")
+    root.option_add("*selectForeground", INK)
+
+
 class App:
     def __init__(self, root):
         self.root = root
         root.title("Podcast to Cartoon")
         root.geometry("980x820")
-        root.configure(bg="#f3ecdf")
+        apply_dark(root)
         self.audio = None
         self.result = None
         self.cast = []
@@ -55,80 +86,81 @@ class App:
         self.set_photo = None
         cfg = load_config()
 
-        tk.Label(root, text="Podcast to Cartoon", font=("Helvetica", 20, "bold"), bg="#f3ecdf").pack(pady=(12, 2))
+        tk.Label(root, text="Podcast to Cartoon", font=("Helvetica", 20, "bold"), bg=BG, fg=INK).pack(pady=(12, 2))
         tk.Label(
             root,
             text="Place each puppet, design the set, then make the video.",
-            bg="#f3ecdf",
+            bg=BG,
+            fg=INK,
         ).pack()
 
-        keys = tk.Frame(root, bg="#f3ecdf")
+        keys = tk.Frame(root, bg=BG)
         keys.pack(pady=8)
-        tk.Label(keys, text="Hugging Face token", bg="#f3ecdf").grid(row=0, column=0, sticky="w")
-        self.hf = tk.Entry(keys, width=42, show="*")
+        tk.Label(keys, text="Hugging Face token", bg=BG, fg=INK).grid(row=0, column=0, sticky="w")
+        self.hf = ttk.Entry(keys, width=42, show="*")
         self.hf.grid(row=0, column=1, padx=6)
         if cfg.get("hf"):
             self.hf.insert(0, cfg["hf"])
-        tk.Label(keys, text="xAI key (drawing only)", bg="#f3ecdf").grid(row=1, column=0, sticky="w")
-        self.xai = tk.Entry(keys, width=42, show="*")
+        tk.Label(keys, text="xAI key (drawing only)", bg=BG, fg=INK).grid(row=1, column=0, sticky="w")
+        self.xai = ttk.Entry(keys, width=42, show="*")
         self.xai.grid(row=1, column=1, padx=6, pady=4)
         if cfg.get("xai"):
             self.xai.insert(0, cfg["xai"])
 
-        body = tk.Frame(root, bg="#f3ecdf")
+        body = tk.Frame(root, bg=BG)
         body.pack(fill="both", expand=True, padx=12, pady=6)
-        left = tk.Frame(body, bg="#f3ecdf")
+        left = tk.Frame(body, bg=BG)
         left.pack(side="left", fill="y")
-        tk.Label(left, text="Saved cast", bg="#f3ecdf", font=("Helvetica", 13, "bold")).pack(anchor="w")
-        self.cast_list = tk.Listbox(left, width=28, height=12)
+        tk.Label(left, text="Saved cast", bg=BG, fg=INK, font=("Helvetica", 13, "bold")).pack(anchor="w")
+        self.cast_list = tk.Listbox(left, width=28, height=12, bg=FIELD, fg=INK, selectbackground="#5c5346", selectforeground=INK, highlightbackground=BG, highlightcolor=LINE)
         self.cast_list.pack(pady=4)
         self.cast_list.bind("<<ListboxSelect>>", self.on_select)
-        row = tk.Frame(left, bg="#f3ecdf")
+        row = tk.Frame(left, bg=BG)
         row.pack()
-        tk.Button(row, text="Add headshot", command=self.add_headshot).pack(side="left", padx=2)
-        tk.Button(row, text="Remove", command=self.remove_selected).pack(side="left", padx=2)
-        tk.Label(left, text="Name", bg="#f3ecdf").pack(anchor="w", pady=(8, 0))
-        self.name = tk.Entry(left, width=28)
+        ttk.Button(row, text="Add headshot", command=self.add_headshot).pack(side="left", padx=2)
+        ttk.Button(row, text="Remove", command=self.remove_selected).pack(side="left", padx=2)
+        tk.Label(left, text="Name", bg=BG, fg=INK).pack(anchor="w", pady=(8, 0))
+        self.name = ttk.Entry(left, width=28)
         self.name.pack()
-        tk.Label(left, text="Note for the drawing", bg="#f3ecdf").pack(anchor="w")
-        self.note = tk.Entry(left, width=28)
+        tk.Label(left, text="Note for the drawing", bg=BG, fg=INK).pack(anchor="w")
+        self.note = ttk.Entry(left, width=28)
         self.note.pack()
-        tk.Button(left, text="Draw avatar", command=self.start_draw).pack(pady=4, fill="x")
-        tk.Button(left, text="Cut mouths", command=self.start_mouths).pack(fill="x")
-        tk.Button(left, text="Keep avatar", command=self.keep_selected).pack(pady=4, fill="x")
+        ttk.Button(left, text="Draw avatar", command=self.start_draw).pack(pady=4, fill="x")
+        ttk.Button(left, text="Cut mouths", command=self.start_mouths).pack(fill="x")
+        ttk.Button(left, text="Keep avatar", command=self.keep_selected).pack(pady=4, fill="x")
 
-        right = tk.Frame(body, bg="#f3ecdf")
+        right = tk.Frame(body, bg=BG)
         right.pack(side="left", fill="both", expand=True, padx=(16, 0))
         book = ttk.Notebook(right)
         book.pack(fill="both", expand=True)
-        episode = tk.Frame(book, bg="#f3ecdf")
-        puppet = tk.Frame(book, bg="#f3ecdf")
-        studio = tk.Frame(book, bg="#f3ecdf")
+        episode = tk.Frame(book, bg=BG)
+        puppet = tk.Frame(book, bg=BG)
+        studio = tk.Frame(book, bg=BG)
         book.add(episode, text="Episode")
         book.add(puppet, text="Puppet")
         book.add(studio, text="Set")
-        tk.Button(episode, text="Choose audio", command=self.choose_audio).pack(anchor="w", padx=8, pady=(8, 0))
-        self.audio_label = tk.Label(episode, text="No audio yet", bg="#f3ecdf")
+        ttk.Button(episode, text="Choose audio", command=self.choose_audio).pack(anchor="w", padx=8, pady=(8, 0))
+        self.audio_label = tk.Label(episode, text="No audio yet", bg=BG, fg=INK)
         self.audio_label.pack(anchor="w", padx=8)
-        spins = tk.Frame(episode, bg="#f3ecdf")
+        spins = tk.Frame(episode, bg=BG)
         spins.pack(anchor="w", padx=8, pady=4)
-        tk.Label(spins, text="Min", bg="#f3ecdf").pack(side="left")
-        self.min_sp = tk.Spinbox(spins, from_=2, to=8, width=4)
+        tk.Label(spins, text="Min", bg=BG, fg=INK).pack(side="left")
+        self.min_sp = ttk.Spinbox(spins, from_=2, to=8, width=4)
         self.min_sp.delete(0, "end")
         self.min_sp.insert(0, "4")
         self.min_sp.pack(side="left", padx=4)
-        tk.Label(spins, text="Max", bg="#f3ecdf").pack(side="left")
-        self.max_sp = tk.Spinbox(spins, from_=2, to=8, width=4)
+        tk.Label(spins, text="Max", bg=BG, fg=INK).pack(side="left")
+        self.max_sp = ttk.Spinbox(spins, from_=2, to=8, width=4)
         self.max_sp.delete(0, "end")
         self.max_sp.insert(0, "5")
         self.max_sp.pack(side="left", padx=4)
-        self.go = tk.Button(episode, text="1. Find speakers", command=self.start_process)
+        self.go = ttk.Button(episode, text="1. Find speakers", command=self.start_process)
         self.go.pack(anchor="w", padx=8, pady=4)
-        self.assign = tk.Frame(episode, bg="#f3ecdf")
+        self.assign = tk.Frame(episode, bg=BG)
         self.assign.pack(anchor="w", fill="x", padx=8, pady=4)
-        self.video_btn = tk.Button(episode, text="2. Make cartoon video", command=self.start_video, state="disabled")
+        self.video_btn = ttk.Button(episode, text="2. Make cartoon video", command=self.start_video, state="disabled")
         self.video_btn.pack(anchor="w", padx=8, pady=4)
-        self.log = scrolledtext.ScrolledText(episode, height=12, width=70)
+        self.log = scrolledtext.ScrolledText(episode, height=12, width=70, bg=FIELD, fg=INK, insertbackground=INK, selectbackground="#5c5346", highlightbackground=BG)
         self.log.pack(fill="both", expand=True, pady=6)
         self._build_puppet(puppet)
         self._build_set(studio)
@@ -326,7 +358,7 @@ class App:
         self.speaker_vars = {}
         choices = ["(simple card)"] + [item.get("name") or item["id"] for item in self.cast]
         for i, sp in enumerate(names):
-            tk.Label(self.assign, text=sp, bg="#f3ecdf").grid(row=i, column=0, sticky="w")
+            tk.Label(self.assign, text=sp, bg=BG, fg=INK).grid(row=i, column=0, sticky="w")
             var = tk.StringVar(value=choices[min(i + 1, len(choices) - 1)] if len(choices) > 1 else choices[0])
             self.speaker_vars[sp] = var
             ttk.Combobox(self.assign, textvariable=var, values=choices, width=24, state="readonly").grid(row=i, column=1)
@@ -375,30 +407,30 @@ class App:
 
 
     def _build_puppet(self, parent):
-        tk.Label(parent, text="Move the mouth, then set how big this person stands.", bg="#f3ecdf").pack(anchor="w", padx=8, pady=(8, 0))
-        self.preview = tk.Label(parent, bg="#f3ecdf")
+        tk.Label(parent, text="Move the mouth, then set how big this person stands.", bg=BG, fg=INK).pack(anchor="w", padx=8, pady=(8, 0))
+        self.preview = tk.Label(parent, bg=BG, fg=INK)
         self.preview.pack(anchor="w", padx=8, pady=4)
         self.mouth_shape = tk.StringVar(value="closed")
-        shapes = tk.Frame(parent, bg="#f3ecdf")
+        shapes = tk.Frame(parent, bg=BG)
         shapes.pack(anchor="w", padx=8)
         for name in ("closed", "small", "medium", "wide", "round", "teeth"):
-            tk.Radiobutton(
+            ttk.Radiobutton(
                 shapes, text=name, value=name, variable=self.mouth_shape,
-                command=self.refresh_puppet_preview, bg="#f3ecdf",
+                command=self.refresh_puppet_preview,
             ).pack(side="left")
-        self.puppet_scale = tk.Scale(parent, label="Puppet size", from_=60, to=160, orient="horizontal", bg="#f3ecdf", command=lambda _v: self.refresh_puppet_preview())
+        self.puppet_scale = tk.Scale(parent, label="Puppet size", from_=60, to=160, orient="horizontal", bg=BG, fg=INK, troughcolor=FIELD, highlightbackground=BG, activebackground=BG, command=lambda _v: self.refresh_puppet_preview())
         self.puppet_scale.set(100)
         self.puppet_scale.pack(fill="x", padx=8)
-        self.mouth_x = tk.Scale(parent, label="Mouth sideways", from_=30, to=70, orient="horizontal", bg="#f3ecdf", command=lambda _v: self.refresh_puppet_preview())
+        self.mouth_x = tk.Scale(parent, label="Mouth sideways", from_=30, to=70, orient="horizontal", bg=BG, fg=INK, troughcolor=FIELD, highlightbackground=BG, activebackground=BG, command=lambda _v: self.refresh_puppet_preview())
         self.mouth_x.set(50)
         self.mouth_x.pack(fill="x", padx=8)
-        self.mouth_y = tk.Scale(parent, label="Mouth height", from_=48, to=80, orient="horizontal", bg="#f3ecdf", command=lambda _v: self.refresh_puppet_preview())
+        self.mouth_y = tk.Scale(parent, label="Mouth height", from_=48, to=80, orient="horizontal", bg=BG, fg=INK, troughcolor=FIELD, highlightbackground=BG, activebackground=BG, command=lambda _v: self.refresh_puppet_preview())
         self.mouth_y.set(64)
         self.mouth_y.pack(fill="x", padx=8)
-        self.mouth_s = tk.Scale(parent, label="Mouth size", from_=10, to=40, orient="horizontal", bg="#f3ecdf", command=lambda _v: self.refresh_puppet_preview())
+        self.mouth_s = tk.Scale(parent, label="Mouth size", from_=10, to=40, orient="horizontal", bg=BG, fg=INK, troughcolor=FIELD, highlightbackground=BG, activebackground=BG, command=lambda _v: self.refresh_puppet_preview())
         self.mouth_s.set(22)
         self.mouth_s.pack(fill="x", padx=8)
-        tk.Button(parent, text="Save puppet", command=self.save_puppet).pack(anchor="w", padx=8, pady=6)
+        ttk.Button(parent, text="Save puppet", command=self.save_puppet).pack(anchor="w", padx=8, pady=6)
 
     def refresh_puppet_preview(self):
         from PIL import ImageTk
@@ -431,33 +463,33 @@ class App:
         self.write("Puppet saved. The next video uses this mouth and size.\n")
 
     def _build_set(self, parent):
-        tk.Label(parent, text="Pick a room, or describe one and draw it.", bg="#f3ecdf").pack(anchor="w", padx=8, pady=(8, 0))
-        self.set_preview = tk.Label(parent, bg="#f3ecdf")
+        tk.Label(parent, text="Pick a room, or describe one and draw it.", bg=BG, fg=INK).pack(anchor="w", padx=8, pady=(8, 0))
+        self.set_preview = tk.Label(parent, bg=BG, fg=INK)
         self.set_preview.pack(anchor="w", padx=8, pady=4)
-        row = tk.Frame(parent, bg="#f3ecdf")
+        row = tk.Frame(parent, bg=BG)
         row.pack(anchor="w", padx=8)
-        tk.Label(row, text="Look", bg="#f3ecdf").pack(side="left")
+        tk.Label(row, text="Look", bg=BG, fg=INK).pack(side="left")
         self.set_preset = ttk.Combobox(row, values=PRESETS, width=16, state="readonly")
         self.set_preset.set("studio")
         self.set_preset.pack(side="left", padx=6)
         self.set_preset.bind("<<ComboboxSelected>>", lambda _e: self.refresh_set_preview())
-        tk.Label(parent, text="Name", bg="#f3ecdf").pack(anchor="w", padx=8)
-        self.set_name = tk.Entry(parent, width=28)
+        tk.Label(parent, text="Name", bg=BG, fg=INK).pack(anchor="w", padx=8)
+        self.set_name = ttk.Entry(parent, width=28)
         self.set_name.pack(anchor="w", padx=8)
-        tk.Label(parent, text="Describe a drawn set", bg="#f3ecdf").pack(anchor="w", padx=8)
-        self.set_note = tk.Entry(parent, width=42)
+        tk.Label(parent, text="Describe a drawn set", bg=BG, fg=INK).pack(anchor="w", padx=8)
+        self.set_note = ttk.Entry(parent, width=42)
         self.set_note.pack(anchor="w", padx=8, pady=2)
-        buttons = tk.Frame(parent, bg="#f3ecdf")
+        buttons = tk.Frame(parent, bg=BG)
         buttons.pack(anchor="w", padx=8, pady=4)
-        tk.Button(buttons, text="Save this look", command=self.save_set).pack(side="left", padx=(0, 6))
-        tk.Button(buttons, text="Draw this set", command=self.start_draw_set).pack(side="left")
-        self.set_list = tk.Listbox(parent, height=4)
+        ttk.Button(buttons, text="Save this look", command=self.save_set).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Draw this set", command=self.start_draw_set).pack(side="left")
+        self.set_list = tk.Listbox(parent, height=4, bg=FIELD, fg=INK, selectbackground="#5c5346", selectforeground=INK, highlightbackground=BG)
         self.set_list.pack(fill="x", padx=8, pady=4)
         self.set_list.bind("<<ListboxSelect>>", self.on_set_select)
-        actions = tk.Frame(parent, bg="#f3ecdf")
+        actions = tk.Frame(parent, bg=BG)
         actions.pack(anchor="w", padx=8)
-        tk.Button(actions, text="Use this set", command=self.use_selected_set).pack(side="left", padx=(0, 6))
-        tk.Button(actions, text="Remove set", command=self.remove_set).pack(side="left")
+        ttk.Button(actions, text="Use this set", command=self.use_selected_set).pack(side="left", padx=(0, 6))
+        ttk.Button(actions, text="Remove set", command=self.remove_set).pack(side="left")
         self.refresh_set_preview()
 
     def refresh_set_preview(self):
