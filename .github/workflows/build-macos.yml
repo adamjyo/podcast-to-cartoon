@@ -21,14 +21,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
+      - name: Bundle Rhubarb Lip Sync
+        run: |
+          curl -fsSL -o rhubarb.zip https://github.com/DanielSWolf/rhubarb-lip-sync/releases/download/v1.14.0/Rhubarb-Lip-Sync-1.14.0-macOS.zip
+          rm -rf vendor/rhubarb rhubarb-src
+          mkdir -p vendor/rhubarb
+          unzip -q rhubarb.zip -d rhubarb-src
+          bin=$(find rhubarb-src -type f -name rhubarb | head -1)
+          res=$(find rhubarb-src -type d -name res | head -1)
+          test -n "$bin" && test -n "$res"
+          cp "$bin" vendor/rhubarb/rhubarb
+          chmod +x vendor/rhubarb/rhubarb
+          cp -R "$res" vendor/rhubarb/res
+
       - name: Build app
         run: |
           pyinstaller --noconfirm --windowed --name PodcastProcessor \
             --collect-all whisperx \
             --collect-all pyannote \
             --collect-all imageio_ffmpeg \
+            --add-binary "vendor/rhubarb/rhubarb:." \
+            --add-data "vendor/rhubarb/res:res" \
             --hidden-import podcast_processor \
             --hidden-import podcast_video \
+            --hidden-import cast_library \
+            --hidden-import draw_avatar \
+            --hidden-import rhubarb_sync \
             PodcastApp.py
           codesign --force --deep --sign - "dist/PodcastProcessor.app" || true
           ditto -c -k --keepParent "dist/PodcastProcessor.app" PodcastProcessor-macOS.zip

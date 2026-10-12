@@ -4,6 +4,5 @@ torchaudio
 pyannote.audio
 faster-whisper
 numpy
-pandas
 pillow
 imageio-ffmpeg
