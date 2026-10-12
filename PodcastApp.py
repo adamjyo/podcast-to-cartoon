@@ -322,26 +322,40 @@ class App:
             messagebox.showwarning("No headshot", "Add a headshot first.")
             return
         self.persist_keys()
+        key = self.xai.get().strip()
+        if not key:
+            messagebox.showwarning("Missing key", "Paste an xAI key and click Save keys.")
+            return
+        job = {
+            "id": loaded["id"],
+            "photo": loaded["photo"],
+            "name": self.name.get().strip() or loaded.get("name") or "Unnamed",
+            "note": self.note.get().strip(),
+            "key": key,
+            "mouthX": float(loaded.get("mouthX") or 50),
+            "mouthY": float(loaded.get("mouthY") or 64),
+            "mouthScale": float(loaded.get("mouthScale") or 22),
+        }
         self.show_busy("Drawing the avatar")
-        threading.Thread(target=self._draw, args=(loaded,), daemon=True).start()
+        threading.Thread(target=self._draw, args=(job,), daemon=True).start()
 
-    def _draw(self, loaded):
+    def _draw(self, job):
         try:
-            blob = draw_avatar(loaded["photo"], self.xai.get().strip(), self.note.get().strip())
+            blob = draw_avatar(job["photo"], job["key"], job["note"])
             keep_cast(
-                loaded["id"],
-                self.name.get().strip() or loaded.get("name"),
-                self.note.get().strip(),
-                Path(loaded["photo"]).read_bytes(),
+                job["id"],
+                job["name"],
+                job["note"],
+                Path(job["photo"]).read_bytes(),
                 blob,
-                float(loaded.get("mouthX") or 50),
-                float(loaded.get("mouthY") or 64),
-                float(loaded.get("mouthScale") or 22),
+                job["mouthX"],
+                job["mouthY"],
+                job["mouthScale"],
                 None,
             )
             self.root.after(0, self._drew)
         except Exception as exc:
-            self.root.after(0, lambda: self._fail(exc))
+            self.root.after(0, lambda e=exc: self._fail(e))
 
     def _drew(self):
         self.refresh_cast()
@@ -371,27 +385,42 @@ class App:
             messagebox.showwarning("No avatar", "Draw the avatar before cutting mouths.")
             return
         self.persist_keys()
+        key = self.xai.get().strip()
+        if not key:
+            messagebox.showwarning("Missing key", "Paste an xAI key and click Save keys.")
+            return
+        job = {
+            "id": loaded["id"],
+            "photo": loaded["photo"],
+            "avatar": loaded["avatar"],
+            "name": self.name.get().strip() or loaded.get("name") or "Unnamed",
+            "note": self.note.get().strip(),
+            "key": key,
+            "mouthX": float(loaded.get("mouthX") or 50),
+            "mouthY": float(loaded.get("mouthY") or 64),
+            "mouthScale": float(loaded.get("mouthScale") or 22),
+        }
         self.show_busy("Cutting the mouths")
-        threading.Thread(target=self._mouths, args=(loaded,), daemon=True).start()
+        threading.Thread(target=self._mouths, args=(job,), daemon=True).start()
 
-    def _mouths(self, loaded):
+    def _mouths(self, job):
         try:
-            mouths = draw_mouths(loaded["avatar"], self.xai.get().strip())
+            mouths = draw_mouths(job["avatar"], job["key"])
             keep_cast(
-                loaded["id"],
-                self.name.get().strip() or loaded.get("name"),
-                self.note.get().strip(),
-                Path(loaded["photo"]).read_bytes(),
-                Path(loaded["avatar"]).read_bytes(),
-                float(loaded.get("mouthX") or 50),
-                float(loaded.get("mouthY") or 64),
-                float(loaded.get("mouthScale") or 22),
+                job["id"],
+                job["name"],
+                job["note"],
+                Path(job["photo"]).read_bytes(),
+                Path(job["avatar"]).read_bytes(),
+                job["mouthX"],
+                job["mouthY"],
+                job["mouthScale"],
                 mouths,
             )
             self.root.after(0, lambda: self.show_done("Mouths ready"))
             self.root.after(0, lambda: self.write("Mouths cut and kept with this avatar.\n"))
         except Exception as exc:
-            self.root.after(0, lambda: self._fail(exc))
+            self.root.after(0, lambda e=exc: self._fail(e))
 
     def choose_audio(self):
         path = filedialog.askopenfilename(filetypes=[("Audio", "*.mp3 *.wav *.m4a *.mp4")])
@@ -413,20 +442,23 @@ class App:
         self.go.config(state="disabled")
         self.video_btn.config(state="disabled")
         self.show_busy("Finding speakers")
-        threading.Thread(target=self._process, daemon=True).start()
+        audio = self.audio
+        low = int(self.min_sp.get())
+        high = int(self.max_sp.get())
+        threading.Thread(target=self._process, args=(audio, low, high), daemon=True).start()
 
-    def _process(self):
+    def _process(self, audio, low, high):
         try:
             out = Path.home() / "Desktop" / "Podcast Processor"
             def report(amount, label):
                 self.root.after(0, lambda a=amount, s=label: self.show_progress(a, s))
 
             result = process_audio(
-                self.audio,
+                audio,
                 str(out),
                 model="small",
-                min_speakers=int(self.min_sp.get()),
-                max_speakers=int(self.max_sp.get()),
+                min_speakers=low,
+                max_speakers=high,
                 progress=report,
             )
             self.root.after(0, lambda: self._processed(result, out))
@@ -466,31 +498,34 @@ class App:
             return
         self.video_btn.config(state="disabled")
         self.show_busy("Matching mouths")
-        threading.Thread(target=self._video, daemon=True).start()
+        names = {}
+        for sp, var in self.speaker_vars.items():
+            picked = var.get()
+            names[sp] = picked if picked != "(simple card)" else sp
+        threading.Thread(
+            target=self._video,
+            args=(self.audio, self.result, names, self._cast_for_speakers()),
+            daemon=True,
+        ).start()
 
-    def _video(self):
+    def _video(self, audio, result, names, cast):
         try:
             out = Path.home() / "Desktop" / "Podcast Processor"
             out.mkdir(parents=True, exist_ok=True)
-            dest = out / f"{Path(self.audio).stem}_cartoon.mp4"
+            dest = out / f"{Path(audio).stem}_cartoon.mp4"
             def report(amount, label):
                 self.root.after(0, lambda a=amount, s=label: self.show_progress(a * 0.35, s))
 
             try:
-                cues = build_cues(self.audio, self.result, report)
+                cues = build_cues(audio, result, report)
             except Exception as exc:
                 cues = None
                 self.root.after(0, lambda e=exc: self.write(f"Lip sync fell back to a timer: {e}\n"))
-            names = {}
-            for sp, var in self.speaker_vars.items():
-                picked = var.get()
-                names[sp] = picked if picked != "(simple card)" else sp
-
             def progress(done, total):
                 self.root.after(0, lambda d=done, n=total: self.show_progress(0.35 + 0.65 * d / n, f"Drawing the cartoon   {d} / {n}"))
 
             background = self._background_for_video()
-            render_cartoon(self.result, self.audio, dest, names, self._cast_for_speakers(), progress, cues, background)
+            render_cartoon(result, audio, dest, names, cast, progress, cues, background)
             self.root.after(0, lambda: self._video_done(dest))
         except Exception as exc:
             self.root.after(0, lambda: self._fail(exc))
@@ -611,14 +646,20 @@ class App:
         if not note:
             messagebox.showwarning("Add a description", "Describe the room you want drawn.")
             return
+        key = self.xai.get().strip()
+        if not key:
+            messagebox.showwarning("Missing key", "Paste an xAI key and click Save keys.")
+            return
+        name = self.set_name.get().strip()
+        preset = self.set_preset.get() or "paper"
         self.show_busy("Drawing the set")
-        threading.Thread(target=self._draw_set, args=(note,), daemon=True).start()
+        threading.Thread(target=self._draw_set, args=(note, key, name, preset), daemon=True).start()
 
-    def _draw_set(self, note):
+    def _draw_set(self, note, key, name, preset):
         try:
-            blob = draw_background(note, self.xai.get().strip())
+            blob = draw_background(note, key)
             set_id = uuid.uuid4().hex
-            keep_set(set_id, self.set_name.get().strip() or "Drawn set", self.set_preset.get() or "paper", blob)
+            keep_set(set_id, name or "Drawn set", preset, blob)
             self.root.after(0, lambda: self._set_drawn(set_id))
         except Exception as exc:
             self.root.after(0, lambda e=exc: self._fail(e))

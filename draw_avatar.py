@@ -74,12 +74,16 @@ def _edit(image_bytes: bytes, prompt: str, api_key: str) -> bytes:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=180) as res:
+            with urllib.request.urlopen(req, timeout=90) as res:
                 payload = json.loads(res.read().decode())
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:300]
             last_error = RuntimeError(f"Drawing failed ({exc.code}). {detail}")
+            if exc.code != 404:
+                raise last_error
             continue
+        except Exception as exc:
+            raise RuntimeError(f"Drawing did not finish. {exc}") from exc
         item = (payload.get("data") or [{}])[0]
         if item.get("b64_json"):
             drawn = base64.b64decode(item["b64_json"])
