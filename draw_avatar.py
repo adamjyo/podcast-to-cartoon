@@ -12,11 +12,12 @@ from pathlib import Path
 from PIL import Image
 
 AVATAR_PROMPT = (
-    "Redraw this headshot as a hand-drawn ink and watercolor podcast avatar. "
+    "Completely redraw this person as a hand-drawn ink and watercolor cartoon. "
+    "Do not return the photograph. Do not look photorealistic. "
     "Bust from mid-chest up, facing the camera, mouth gently closed. "
-    "Keep this exact person's recognizable face, hair, glasses, facial hair, and clothing colors. "
-    "Visible pencil line, soft watercolor wash, plain warm cream paper background, "
-    "generous margin, no text, no watermark, no border."
+    "Keep the same recognizable face, hair, glasses, facial hair, and clothing colors, "
+    "but render them with visible pencil lines and a soft watercolor wash on plain warm cream paper. "
+    "No text, no watermark, no border."
 )
 
 MOUTH_PROMPT = (
@@ -30,40 +31,69 @@ MOUTH_PROMPT = (
 MOUTH_NAMES = ("closed", "small", "medium", "wide", "round", "teeth")
 
 
+def _mime(blob: bytes) -> str:
+    if blob.startswith(b"\x89PNG"):
+        return "image/png"
+    if blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
+
+def _prepare(blob: bytes) -> tuple[bytes, str]:
+    image = Image.open(BytesIO(blob)).convert("RGB")
+    image.thumbnail((1024, 1024))
+    buf = BytesIO()
+    image.save(buf, format="JPEG", quality=90)
+    data = buf.getvalue()
+    return data, "image/jpeg"
+
+
 def _edit(image_bytes: bytes, prompt: str, api_key: str) -> bytes:
     if not api_key.strip():
         raise RuntimeError("Paste an xAI API key to draw avatars.")
-    data_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
-    body = json.dumps(
-        {
-            "model": "grok-imagine-image",
-            "prompt": prompt,
-            "image": {"url": data_url, "type": "image_url"},
-            "response_format": "b64_json",
-        }
-    ).encode()
-    req = urllib.request.Request(
-        "https://api.x.ai/v1/images/edits",
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key.strip()}",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=180) as res:
-            payload = json.loads(res.read().decode())
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:300]
-        raise RuntimeError(f"Drawing failed ({exc.code}). {detail}") from exc
-    item = (payload.get("data") or [{}])[0]
-    if item.get("b64_json"):
-        return base64.b64decode(item["b64_json"])
-    if item.get("url"):
-        with urllib.request.urlopen(item["url"], timeout=60) as res:
-            return res.read()
-    raise RuntimeError("No drawing came back. Try again.")
+    prepared, mime = _prepare(image_bytes)
+    data_url = f"data:{mime};base64," + base64.b64encode(prepared).decode()
+    last_error = None
+    for model in ("grok-imagine-image-2.0", "grok-imagine-image"):
+        body = json.dumps(
+            {
+                "model": model,
+                "prompt": prompt,
+                "image": {"url": data_url, "type": "image_url"},
+                "aspect_ratio": "2:3",
+                "response_format": "b64_json",
+            }
+        ).encode()
+        req = urllib.request.Request(
+            "https://api.x.ai/v1/images/edits",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key.strip()}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=180) as res:
+                payload = json.loads(res.read().decode())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+            last_error = RuntimeError(f"Drawing failed ({exc.code}). {detail}")
+            continue
+        item = (payload.get("data") or [{}])[0]
+        if item.get("b64_json"):
+            drawn = base64.b64decode(item["b64_json"])
+        elif item.get("url"):
+            with urllib.request.urlopen(item["url"], timeout=60) as res:
+                drawn = res.read()
+        else:
+            last_error = RuntimeError("No drawing came back. Try again.")
+            continue
+        if drawn == prepared or drawn == image_bytes:
+            last_error = RuntimeError("The picture came back unchanged. Try again.")
+            continue
+        return drawn
+    raise last_error or RuntimeError("No drawing came back. Try again.")
 
 
 def draw_avatar(photo_path: str, api_key: str, note: str = "") -> bytes:
@@ -82,7 +112,7 @@ def draw_background(note: str, api_key: str) -> bytes:
     )
     body = json.dumps(
         {
-            "model": "grok-imagine-image",
+            "model": "grok-imagine-image-2.0",
             "prompt": prompt,
             "response_format": "b64_json",
         }

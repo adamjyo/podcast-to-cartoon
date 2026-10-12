@@ -150,6 +150,9 @@ class App:
         tk.Label(left, text="Note for the drawing", bg=BG, fg=INK).pack(anchor="w")
         self.note = ttk.Entry(left, width=28)
         self.note.pack()
+        self.portrait = tk.Label(left, bg=FIELD)
+        self.portrait.pack(pady=(8, 4))
+        self.portrait_photo = None
         ttk.Button(left, text="Draw avatar", command=self.start_draw).pack(pady=4, fill="x")
         ttk.Button(left, text="Cut mouths", command=self.start_mouths).pack(fill="x")
         ttk.Button(left, text="Keep avatar", command=self.keep_selected).pack(pady=4, fill="x")
@@ -157,9 +160,11 @@ class App:
         right = tk.Frame(body, bg=BG)
         right.pack(side="left", fill="both", expand=True, padx=(16, 0))
         book = ttk.Notebook(right)
+        self.book = book
         book.pack(fill="both", expand=True)
         episode = tk.Frame(book, bg=BG)
         puppet = tk.Frame(book, bg=BG)
+        self.puppet_tab = puppet
         studio = tk.Frame(book, bg=BG)
         book.add(episode, text="Episode")
         book.add(puppet, text="Puppet")
@@ -264,6 +269,7 @@ class App:
         self.mouth_y.set(float(loaded.get("mouthY") or 64))
         self.mouth_s.set(float(loaded.get("mouthScale") or 22))
         self.puppet_scale.set(int(float(loaded.get("puppetScale") or 1) * 100))
+        self._show_portrait()
         self.refresh_puppet_preview()
 
     def add_headshot(self):
@@ -276,6 +282,7 @@ class App:
         keep_cast(avatar_id, name, "", photo, None, 50, 64, 22)
         self.refresh_cast()
         self.selected = avatar_id
+        self._show_portrait()
         self.write(f"Saved headshot {name}. Draw an avatar when you are ready.\n")
 
     def keep_selected(self):
@@ -338,8 +345,25 @@ class App:
 
     def _drew(self):
         self.refresh_cast()
+        self._show_portrait()
+        self.book.select(self.puppet_tab)
+        self.refresh_puppet_preview()
         self.show_done("Avatar drawn")
         self.write("Avatar drawn and kept.\n")
+
+    def _show_portrait(self):
+        from PIL import Image, ImageTk
+
+        loaded = self.current()
+        path = (loaded or {}).get("avatar") or (loaded or {}).get("photo")
+        if not path or not Path(path).exists():
+            self.portrait.configure(image="")
+            self.portrait_photo = None
+            return
+        picture = Image.open(path).convert("RGBA")
+        picture.thumbnail((220, 260))
+        self.portrait_photo = ImageTk.PhotoImage(picture)
+        self.portrait.configure(image=self.portrait_photo)
 
     def start_mouths(self):
         loaded = self.current()
