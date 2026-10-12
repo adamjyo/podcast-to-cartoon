@@ -1,0 +1,9 @@
+whisperx>=3.1.0
+torch
+torchaudio
+pyannote.audio
+faster-whisper
+numpy
+pandas
+pillow
+imageio-ffmpeg
