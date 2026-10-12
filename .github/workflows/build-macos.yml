@@ -50,6 +50,9 @@ jobs:
             --hidden-import stage \
             --hidden-import PIL.ImageTk \
             PodcastApp.py
+          PLIST="dist/PodcastProcessor.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Delete :NSRequiresAquaSystemAppearance" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Add :NSRequiresAquaSystemAppearance bool true" "$PLIST"
           codesign --force --deep --sign - "dist/PodcastProcessor.app" || true
           ditto -c -k --keepParent "dist/PodcastProcessor.app" PodcastProcessor-macOS.zip
 

@@ -47,6 +47,17 @@ LINE = "#3f3f3f"
 
 def apply_dark(root):
     root.configure(bg=BG)
+    root.tk_setPalette(
+        background=BG,
+        foreground=INK,
+        activeBackground=FIELD,
+        activeForeground=INK,
+        highlightBackground=BG,
+        highlightColor=INK,
+        selectBackground="#5c5346",
+        selectForeground=INK,
+        insertBackground=INK,
+    )
     style = ttk.Style(root)
     style.theme_use("clam")
     style.configure(".", background=BG, foreground=INK, fieldbackground=FIELD, bordercolor=LINE, lightcolor=LINE, darkcolor=LINE, troughcolor="#3a3a3a")
