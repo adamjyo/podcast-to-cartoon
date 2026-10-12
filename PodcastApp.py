@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 import tkinter as tk
 import uuid
 from io import BytesIO
@@ -52,6 +53,15 @@ FIELD = "#2a2a2a"
 LINE = "#3f3f3f"
 
 
+def _clock(seconds):
+    seconds = max(0, int(seconds))
+    minutes, secs = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
 def apply_dark(root):
     root.configure(bg=BG)
     root.tk_setPalette(
@@ -88,6 +98,7 @@ def apply_dark(root):
         bordercolor=BG,
         lightcolor="#d4b483",
         darkcolor="#d4b483",
+        thickness=22,
     )
     root.option_add("*Foreground", INK)
     root.option_add("*Background", BG)
@@ -135,9 +146,12 @@ class App:
         ttk.Button(keys, text="Save keys", command=self.save_keys).grid(row=0, column=2, rowspan=2, padx=6)
 
         self.bar = ttk.Progressbar(root, style="Gold.Horizontal.TProgressbar", mode="determinate", maximum=100)
-        self.bar.pack(side="bottom", fill="x", padx=16, pady=(0, 12))
+        self.bar.pack(side="bottom", fill="x", padx=16, pady=(0, 8), ipady=6)
+        self.percent = tk.Label(root, text="0%", bg=BG, fg=INK, font=("Helvetica", 22, "bold"))
+        self.percent.pack(side="bottom", anchor="w", padx=16)
         self.status = tk.Label(root, text="Ready", bg=BG, fg=INK, anchor="w", font=("Helvetica", 14))
-        self.status.pack(side="bottom", fill="x", padx=16, pady=(4, 2))
+        self.status.pack(side="bottom", fill="x", padx=16, pady=(8, 0))
+        self._job_started = None
 
         body = tk.Frame(root, bg=BG)
         body.pack(fill="both", expand=True, padx=12, pady=6)
@@ -227,21 +241,35 @@ class App:
         self.write("Keys saved on this Mac. They will be filled in next time you open the app.\n")
 
     def show_busy(self, label):
+        self._job_started = time.time()
         self.status.config(text=label)
+        self.percent.config(text="…")
         self.bar.stop()
         self.bar.config(mode="indeterminate", maximum=100)
         self.bar.start(12)
 
     def show_progress(self, fraction, label):
+        if self._job_started is None:
+            self._job_started = time.time()
+        elapsed = max(0, time.time() - self._job_started)
+        pct = max(0, min(100, float(fraction) * 100))
+        if pct >= 4:
+            remain = elapsed * (100 - pct) / pct
+            timing = f"{_clock(elapsed)} gone, about {_clock(remain)} left"
+        else:
+            timing = f"{_clock(elapsed)} gone"
         self.bar.stop()
         self.bar.config(mode="determinate", maximum=100)
-        self.bar["value"] = max(0, min(100, float(fraction) * 100))
-        self.status.config(text=label)
+        self.bar["value"] = pct
+        self.percent.config(text=f"{pct:.0f}%")
+        self.status.config(text=f"{label}   {timing}")
 
     def show_done(self, label):
+        self._job_started = None
         self.bar.stop()
         self.bar.config(mode="determinate", maximum=100)
         self.bar["value"] = 100
+        self.percent.config(text="100%")
         self.status.config(text=label)
 
     def close_app(self):
@@ -793,6 +821,7 @@ class App:
         self.bar.stop()
         self.bar.config(mode="determinate")
         self.bar["value"] = 0
+        self.percent.config(text="0%")
         self.status.config(text="Something went wrong")
         self.write(f"\nError: {exc}\n")
         messagebox.showerror("Something went wrong", str(exc))
