@@ -173,7 +173,7 @@ def render_cartoon(result, audio_path, out_path, names, cast_for_speaker=None, p
             for nline, line in enumerate(_wrap(draw, text or "...", sub_font, W - 180)):
                 draw.text((90, 596 + nline * 30), line, font=sub_font, fill="#1f2a24")
             proc.stdin.write(img.convert("RGB").tobytes())
-            if progress and i % FPS == 0:
+            if progress and (i % FPS == 0 or i == nframes - 1):
                 progress(i + 1, nframes)
     finally:
         if proc.stdin:

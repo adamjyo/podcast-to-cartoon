@@ -136,7 +136,11 @@ def _run(binary: Path, wav_path: Path, dialog_path: Path, recognizer: str, out_p
     return cues
 
 
-def build_cues(audio_path: str, result) -> list:
+def build_cues(audio_path: str, result, progress=None) -> list:
+    def tick(amount, label):
+        if progress:
+            progress(amount, label)
+
     binary = find_rhubarb()
     if binary is None:
         raise RuntimeError("Rhubarb Lip Sync is not in this app build.")
@@ -147,13 +151,17 @@ def build_cues(audio_path: str, result) -> list:
         wav_path = work / "speech.wav"
         dialog_path = work / "dialog.txt"
         out_path = work / "cues.json"
+        tick(0.12, "Preparing the recording")
         dialog_path.write_text(_dialog_text(result), encoding="utf-8")
         _to_wav(Path(audio_path), wav_path)
+        tick(0.4, "Matching mouths to the voices")
         try:
-            return _run(binary, wav_path, dialog_path, recognizer, out_path)
+            cues = _run(binary, wav_path, dialog_path, recognizer, out_path)
         except RuntimeError:
             if recognizer == "phonetic":
                 raise
-            return _run(binary, wav_path, dialog_path, "phonetic", out_path)
+            cues = _run(binary, wav_path, dialog_path, "phonetic", out_path)
+        tick(1, "Mouths matched")
+        return cues
     finally:
         shutil.rmtree(work, ignore_errors=True)

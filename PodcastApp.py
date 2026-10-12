@@ -15,7 +15,7 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 from cast_library import SUPPORT, forget_cast, keep_cast, list_cast, load_cast, update_puppet
 from draw_avatar import draw_avatar, draw_background, draw_mouths
 from podcast_processor import process_audio, speakers_in
-from podcast_video import preview_puppet, render_cartoon
+from podcast_video import PALETTE, preview_puppet, render_cartoon
 from rhubarb_sync import build_cues
 from stage import PRESETS, forget_set, keep_set, list_sets, load_set, paint_stage
 
@@ -74,6 +74,14 @@ def apply_dark(root):
     style.map("TCombobox", fieldbackground=[("readonly", FIELD)], foreground=[("readonly", INK)])
     style.configure("TRadiobutton", background=BG, foreground=INK)
     style.map("TRadiobutton", background=[("active", BG)], foreground=[("active", INK)])
+    style.configure(
+        "Gold.Horizontal.TProgressbar",
+        troughcolor=FIELD,
+        background="#d4b483",
+        bordercolor=BG,
+        lightcolor="#d4b483",
+        darkcolor="#d4b483",
+    )
     root.option_add("*Foreground", INK)
     root.option_add("*Background", BG)
     root.option_add("*insertBackground", INK)
@@ -118,6 +126,11 @@ class App:
         if cfg.get("xai"):
             self.xai.insert(0, cfg["xai"])
         ttk.Button(keys, text="Save keys", command=self.save_keys).grid(row=0, column=2, rowspan=2, padx=6)
+
+        self.bar = ttk.Progressbar(root, style="Gold.Horizontal.TProgressbar", mode="determinate", maximum=100)
+        self.bar.pack(side="bottom", fill="x", padx=16, pady=(0, 12))
+        self.status = tk.Label(root, text="Ready", bg=BG, fg=INK, anchor="w", font=("Helvetica", 14))
+        self.status.pack(side="bottom", fill="x", padx=16, pady=(4, 2))
 
         body = tk.Frame(root, bg=BG)
         body.pack(fill="both", expand=True, padx=12, pady=6)
@@ -172,7 +185,7 @@ class App:
         self.assign.pack(anchor="w", fill="x", padx=8, pady=4)
         self.video_btn = ttk.Button(episode, text="2. Make cartoon video", command=self.start_video, state="disabled")
         self.video_btn.pack(anchor="w", padx=8, pady=4)
-        self.log = scrolledtext.ScrolledText(episode, height=12, width=70, bg=FIELD, fg=INK, insertbackground=INK, selectbackground="#5c5346", highlightbackground=BG)
+        self.log = scrolledtext.ScrolledText(episode, height=5, width=70, bg=FIELD, fg=INK, insertbackground=INK, selectbackground="#5c5346", highlightbackground=BG)
         self.log.pack(fill="both", expand=True, pady=6)
         self._build_puppet(puppet)
         self._build_set(studio)
@@ -198,6 +211,24 @@ class App:
     def save_keys(self):
         self.persist_keys()
         self.write("Keys saved on this Mac. They will be filled in next time you open the app.\n")
+
+    def show_busy(self, label):
+        self.status.config(text=label)
+        self.bar.stop()
+        self.bar.config(mode="indeterminate", maximum=100)
+        self.bar.start(12)
+
+    def show_progress(self, fraction, label):
+        self.bar.stop()
+        self.bar.config(mode="determinate", maximum=100)
+        self.bar["value"] = max(0, min(100, float(fraction) * 100))
+        self.status.config(text=label)
+
+    def show_done(self, label):
+        self.bar.stop()
+        self.bar.config(mode="determinate", maximum=100)
+        self.bar["value"] = 100
+        self.status.config(text=label)
 
     def close_app(self):
         self.persist_keys()
@@ -284,7 +315,7 @@ class App:
             messagebox.showwarning("No headshot", "Add a headshot first.")
             return
         self.persist_keys()
-        self.write("Drawing avatar…\n")
+        self.show_busy("Drawing the avatar")
         threading.Thread(target=self._draw, args=(loaded,), daemon=True).start()
 
     def _draw(self, loaded):
@@ -307,6 +338,7 @@ class App:
 
     def _drew(self):
         self.refresh_cast()
+        self.show_done("Avatar drawn")
         self.write("Avatar drawn and kept.\n")
 
     def start_mouths(self):
@@ -315,7 +347,7 @@ class App:
             messagebox.showwarning("No avatar", "Draw the avatar before cutting mouths.")
             return
         self.persist_keys()
-        self.write("Cutting mouths…\n")
+        self.show_busy("Cutting the mouths")
         threading.Thread(target=self._mouths, args=(loaded,), daemon=True).start()
 
     def _mouths(self, loaded):
@@ -332,6 +364,7 @@ class App:
                 float(loaded.get("mouthScale") or 22),
                 mouths,
             )
+            self.root.after(0, lambda: self.show_done("Mouths ready"))
             self.root.after(0, lambda: self.write("Mouths cut and kept with this avatar.\n"))
         except Exception as exc:
             self.root.after(0, lambda: self._fail(exc))
@@ -340,7 +373,8 @@ class App:
         path = filedialog.askopenfilename(filetypes=[("Audio", "*.mp3 *.wav *.m4a *.mp4")])
         if path:
             self.audio = path
-            self.audio_label.config(text=Path(path).name)
+            self.audio_label.config(text=Path(path).name, font=("Helvetica", 16, "bold"))
+            self.show_done("Audio ready")
 
     def start_process(self):
         if not self.audio:
@@ -354,18 +388,22 @@ class App:
         os.environ["HF_TOKEN"] = token
         self.go.config(state="disabled")
         self.video_btn.config(state="disabled")
-        self.write("\nFinding speakers…\n")
+        self.show_busy("Finding speakers")
         threading.Thread(target=self._process, daemon=True).start()
 
     def _process(self):
         try:
             out = Path.home() / "Desktop" / "Podcast Processor"
+            def report(amount, label):
+                self.root.after(0, lambda a=amount, s=label: self.show_progress(a, s))
+
             result = process_audio(
                 self.audio,
                 str(out),
                 model="small",
                 min_speakers=int(self.min_sp.get()),
                 max_speakers=int(self.max_sp.get()),
+                progress=report,
             )
             self.root.after(0, lambda: self._processed(result, out))
         except Exception as exc:
@@ -376,17 +414,19 @@ class App:
         self.go.config(state="normal")
         self.video_btn.config(state="normal")
         names = speakers_in(result)
+        self.show_done(f"{len(names)} speakers found")
         self.write("Speakers: " + ", ".join(names or ["none"]) + "\n")
-        self.write(f"Transcript saved in {out}\n")
         for child in self.assign.winfo_children():
             child.destroy()
         self.speaker_vars = {}
         choices = ["(simple card)"] + [item.get("name") or item["id"] for item in self.cast]
         for i, sp in enumerate(names):
-            tk.Label(self.assign, text=sp, bg=BG, fg=INK).grid(row=i, column=0, sticky="w")
+            ink, fill = PALETTE[i % len(PALETTE)]
+            tk.Label(self.assign, text=f"  {i + 1}  ", bg=ink, fg=INK, font=("Helvetica", 13, "bold")).grid(row=i, column=0, padx=(0, 8), pady=3)
+            tk.Label(self.assign, text=sp, bg=fill, fg="#1f2a24", padx=8).grid(row=i, column=1, sticky="ew", pady=3)
             var = tk.StringVar(value=choices[min(i + 1, len(choices) - 1)] if len(choices) > 1 else choices[0])
             self.speaker_vars[sp] = var
-            ttk.Combobox(self.assign, textvariable=var, values=choices, width=24, state="readonly").grid(row=i, column=1)
+            ttk.Combobox(self.assign, textvariable=var, values=choices, width=24, state="readonly").grid(row=i, column=2, padx=8)
 
     def _cast_for_speakers(self):
         by_name = {item.get("name"): item["id"] for item in self.cast}
@@ -401,7 +441,7 @@ class App:
         if not self.result:
             return
         self.video_btn.config(state="disabled")
-        self.write("\nMatching mouths to the recording…\n")
+        self.show_busy("Matching mouths")
         threading.Thread(target=self._video, daemon=True).start()
 
     def _video(self):
@@ -409,9 +449,11 @@ class App:
             out = Path.home() / "Desktop" / "Podcast Processor"
             out.mkdir(parents=True, exist_ok=True)
             dest = out / f"{Path(self.audio).stem}_cartoon.mp4"
+            def report(amount, label):
+                self.root.after(0, lambda a=amount, s=label: self.show_progress(a * 0.35, s))
+
             try:
-                cues = build_cues(self.audio, self.result)
-                self.root.after(0, lambda n=len(cues): self.write(f"Rhubarb marked {n} mouth cues.\n"))
+                cues = build_cues(self.audio, self.result, report)
             except Exception as exc:
                 cues = None
                 self.root.after(0, lambda e=exc: self.write(f"Lip sync fell back to a timer: {e}\n"))
@@ -421,8 +463,7 @@ class App:
                 names[sp] = picked if picked != "(simple card)" else sp
 
             def progress(done, total):
-                if done % 4 == 0:
-                    self.root.after(0, lambda d=done, t=total: self.write(f"Frame {d} / {t}\n"))
+                self.root.after(0, lambda d=done, n=total: self.show_progress(0.35 + 0.65 * d / n, f"Drawing the cartoon   {d} / {n}"))
 
             background = self._background_for_video()
             render_cartoon(self.result, self.audio, dest, names, self._cast_for_speakers(), progress, cues, background)
@@ -546,7 +587,7 @@ class App:
         if not note:
             messagebox.showwarning("Add a description", "Describe the room you want drawn.")
             return
-        self.write("Drawing the set…\n")
+        self.show_busy("Drawing the set")
         threading.Thread(target=self._draw_set, args=(note,), daemon=True).start()
 
     def _draw_set(self, note):
@@ -562,6 +603,7 @@ class App:
         self._remember_set(set_id)
         self.refresh_sets()
         self._show_set(load_set(set_id))
+        self.show_done("Set ready")
         self.write("Set drawn and saved. The next video uses it.\n")
 
     def on_set_select(self, _event):
@@ -617,12 +659,17 @@ class App:
 
     def _video_done(self, dest):
         self.video_btn.config(state="normal")
+        self.show_done("Video saved")
         self.write(f"Video saved: {dest}\n")
         messagebox.showinfo("Video ready", f"Saved to\n{dest}")
 
     def _fail(self, exc):
         self.go.config(state="normal")
         self.video_btn.config(state="normal")
+        self.bar.stop()
+        self.bar.config(mode="determinate")
+        self.bar["value"] = 0
+        self.status.config(text="Something went wrong")
         self.write(f"\nError: {exc}\n")
         messagebox.showerror("Something went wrong", str(exc))
 
