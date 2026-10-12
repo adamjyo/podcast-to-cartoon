@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import base64
 import json
+import ssl
 import urllib.error
 import urllib.request
 from io import BytesIO
 from pathlib import Path
 
+import certifi
 from PIL import Image
+
+
+def _open(req, timeout):
+    context = ssl.create_default_context(cafile=certifi.where())
+    return urllib.request.urlopen(req, timeout=timeout, context=context)
 
 AVATAR_PROMPT = (
     "Completely redraw this person as a hand-drawn ink and watercolor cartoon. "
@@ -74,7 +81,7 @@ def _edit(image_bytes: bytes, prompt: str, api_key: str) -> bytes:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=90) as res:
+            with _open(req, 90) as res:
                 payload = json.loads(res.read().decode())
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:300]
@@ -88,7 +95,7 @@ def _edit(image_bytes: bytes, prompt: str, api_key: str) -> bytes:
         if item.get("b64_json"):
             drawn = base64.b64decode(item["b64_json"])
         elif item.get("url"):
-            with urllib.request.urlopen(item["url"], timeout=60) as res:
+            with _open(item["url"], 60) as res:
                 drawn = res.read()
         else:
             last_error = RuntimeError("No drawing came back. Try again.")
@@ -131,7 +138,7 @@ def draw_background(note: str, api_key: str) -> bytes:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=180) as res:
+        with _open(req, 180) as res:
             payload = json.loads(res.read().decode())
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:300]
@@ -140,7 +147,7 @@ def draw_background(note: str, api_key: str) -> bytes:
     if item.get("b64_json"):
         return base64.b64decode(item["b64_json"])
     if item.get("url"):
-        with urllib.request.urlopen(item["url"], timeout=60) as res:
+        with _open(item["url"], 60) as res:
             return res.read()
     raise RuntimeError("No set came back. Try again.")
 

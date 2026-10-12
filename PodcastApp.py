@@ -12,6 +12,12 @@ from io import BytesIO
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
+import certifi
+
+os.environ["SSL_CERT_FILE"] = certifi.where()
+os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
+os.environ["CURL_CA_BUNDLE"] = certifi.where()
+
 from cast_library import SUPPORT, forget_cast, keep_cast, list_cast, load_cast, update_puppet
 from draw_avatar import draw_avatar, draw_background, draw_mouths
 from podcast_processor import process_audio, speakers_in

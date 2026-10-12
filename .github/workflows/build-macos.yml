@@ -40,6 +40,7 @@ jobs:
             --collect-all whisperx \
             --collect-all pyannote \
             --collect-all imageio_ffmpeg \
+            --collect-all certifi \
             --add-binary "vendor/rhubarb/rhubarb:." \
             --add-data "vendor/rhubarb/res:res" \
             --hidden-import podcast_processor \
