@@ -34,6 +34,19 @@ jobs:
           chmod +x vendor/rhubarb/rhubarb
           cp -R "$res" vendor/rhubarb/res
 
+      - name: Bundle speech model
+        run: |
+          python -m pip install -q huggingface_hub
+          python - << 'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              "Systran/faster-whisper-small",
+              local_dir="vendor/speech-model",
+              allow_patterns=["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*"],
+          )
+          PY
+          test -f vendor/speech-model/model.bin
+
       - name: Build app
         run: |
           pyinstaller --noconfirm --windowed --name PodcastProcessor \
@@ -41,6 +54,8 @@ jobs:
             --collect-all pyannote \
             --collect-all imageio_ffmpeg \
             --collect-all certifi \
+            --collect-all faster_whisper \
+            --add-data "vendor/speech-model:speech-model" \
             --add-binary "vendor/rhubarb/rhubarb:." \
             --add-data "vendor/rhubarb/res:res" \
             --hidden-import podcast_processor \

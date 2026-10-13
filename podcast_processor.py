@@ -8,6 +8,7 @@ import json
 import os
 import platform
 import subprocess
+import sys
 from pathlib import Path
 
 # One OpenMP thread. The speech engine creates its own pool. Setting both
@@ -90,26 +91,41 @@ def _clear_stale_locks():
             pass
 
 
-def _load_asr(whisperx, model, threads, token):
-    os.environ["HF_TOKEN"] = token
-    os.environ["HUGGING_FACE_HUB_TOKEN"] = token
-    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
-    os.environ["HF_HUB_ETAG_TIMEOUT"] = "15"
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
-    _clear_stale_locks()
+def speech_model_dir():
+    candidates = []
+    bundled = getattr(sys, "_MEIPASS", None)
+    if bundled:
+        candidates.append(Path(bundled) / "speech-model")
+    candidates.append(Path(__file__).resolve().parent / "vendor" / "speech-model")
+    for path in candidates:
+        if (path / "model.bin").is_file():
+            return path
+    return None
+
+
+def _load_asr(whisperx, threads):
+    folder = speech_model_dir()
+    if folder is None:
+        raise RuntimeError(
+            "The speech model is not in this copy of the app. Download the latest Podcast Processor and replace the old one."
+        )
     kwargs = {"compute_type": "int8"}
     if _accepts(whisperx.load_model, "threads"):
         kwargs["threads"] = max(1, min(threads, 4))
     if _accepts(whisperx.load_model, "vad_method"):
         kwargs["vad_method"] = "silero"
-    if token and _accepts(whisperx.load_model, "use_auth_token"):
-        kwargs["use_auth_token"] = token
+    saved = os.environ.get("HF_HUB_OFFLINE")
+    os.environ["HF_HUB_OFFLINE"] = "1"
     try:
-        return whisperx.load_model(model, "cpu", **kwargs)
+        return whisperx.load_model(str(folder), "cpu", **kwargs)
     except TypeError:
         kwargs.pop("vad_method", None)
-        kwargs.pop("use_auth_token", None)
-        return whisperx.load_model(model, "cpu", **kwargs)
+        return whisperx.load_model(str(folder), "cpu", **kwargs)
+    finally:
+        if saved is None:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            os.environ["HF_HUB_OFFLINE"] = saved
 
 
 def _metal_device(profile):
@@ -158,8 +174,8 @@ def process_audio(
     chip = profile["chip"]
     ram = f"{profile['ram_gb']:.0f} GB"
     tick(0.04, f"This Mac is {chip}, {ram}. Preparing {profile['threads']} cores")
-    tick(0.06, "Loading the speech model. A first run downloads it, then this moves on")
-    model_obj = _load_asr(whisperx, model, profile["threads"], hf_token)
+    tick(0.06, "Opening the speech model included with this app")
+    model_obj = _load_asr(whisperx, profile["threads"])
     audio = whisperx.load_audio(str(audio_path))
     lang = None if not language or language == "auto" else language
 
