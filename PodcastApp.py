@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -23,7 +25,7 @@ from cast_library import SUPPORT, forget_cast, install_included, keep_cast, list
 from draw_avatar import draw_avatar, draw_background, draw_mouths
 from podcast_processor import process_audio, process_tracks, speakers_in
 from podcast_video import PALETTE, preview_puppet, render_cartoon
-from rhubarb_sync import build_cues
+from rhubarb_sync import build_cues, mouth_at
 from opentoonz_export import export_opentoonz, export_parts, launch_opentoonz
 from stage import PRESETS, bundled_background, forget_set, keep_set, list_sets, load_set, paint_stage
 
@@ -117,6 +119,16 @@ class App:
         self.audio = None
         self.tracks = []
         self.parts = []
+        self.scene_index = 0
+        self.drag = None
+        self.scene_w = 880
+        self.scene_h = 340
+        self._play_started = None
+        self._play_cues = {}
+        self._play_token = 0
+        self._player = None
+        self.bg_image = ""
+        self.fg = {"path": "", "x": 0.0, "y": 0.58, "h": 0.42}
         self.result = None
         self.cast = []
         self.selected = None
@@ -129,7 +141,7 @@ class App:
         tk.Label(root, text="Podcast to Cartoon", font=("Helvetica", 20, "bold"), bg=BG, fg=INK).pack(pady=(12, 2))
         tk.Label(
             root,
-            text="Fill in each person, pick a room, then make the episode.",
+            text="Drag a person to move them. Drag a corner to resize. Drag a mouth to place it, and its corner to resize it. Then press Play.",
             bg=BG,
             fg=INK,
         ).pack()
@@ -159,17 +171,27 @@ class App:
 
         tk.Label(
             episode,
-            text="Up to six people. Each row needs a name, an audio file, a picture, and mouth pictures.",
+            text="Drag people and mouths on the scene. Empty rows are skipped when you press Play.",
             bg=BG,
             fg=INK,
         ).pack(anchor="w", padx=8, pady=(10, 0))
+        self.scene = tk.Canvas(episode, width=self.scene_w, height=self.scene_h, bg="#1c2420", highlightthickness=0)
+        self.scene.pack(anchor="w", padx=8, pady=(8, 0))
+        self.scene.bind("<Button-1>", self.scene_down)
+        self.scene.bind("<B1-Motion>", self.scene_drag)
+        self.scene.bind("<ButtonRelease-1>", lambda _e: setattr(self, "drag", None))
+        self.scene.bind("<Double-Button-1>", self.scene_open_person)
         group_tools = tk.Frame(episode, bg=BG)
         group_tools.pack(anchor="w", padx=8, pady=8)
-        tk.Label(group_tools, text="Room", bg=BG, fg=INK).pack(side="left")
+        ttk.Button(group_tools, text="Background", command=self.open_background).pack(side="left")
+        ttk.Button(group_tools, text="Foreground", command=self.open_foreground).pack(side="left", padx=6)
         self.part_bg = ttk.Combobox(group_tools, values=("coffee shop", "library"), width=14, state="readonly")
         self.part_bg.set("coffee shop")
         self.part_bg.pack(side="left", padx=6)
-        ttk.Button(group_tools, text="Make the episode", command=self.export_group).pack(side="left", padx=8)
+        self.part_bg.bind("<<ComboboxSelected>>", lambda _e: self.draw_scene())
+        self.play_btn = ttk.Button(group_tools, text="Play", command=self.play_episode)
+        self.play_btn.pack(side="left", padx=8)
+        ttk.Button(group_tools, text="Stop", command=self.stop_play).pack(side="left")
         self.parts_box = tk.Frame(episode, bg=BG)
         self.parts_box.pack(anchor="w", fill="x", padx=8)
         self.log = scrolledtext.ScrolledText(episode, height=4, width=70, bg=FIELD, fg=INK, insertbackground=INK, selectbackground="#5c5346", highlightbackground=BG)
@@ -212,10 +234,9 @@ class App:
         self.assign.pack(anchor="w", fill="x", padx=8, pady=4)
         actions = tk.Frame(more, bg=BG)
         actions.pack(anchor="w", padx=8)
-        self.video_btn = ttk.Button(actions, text="Make cartoon video", command=self.start_video, state="disabled")
+        self.video_btn = ttk.Button(actions, text="Save a movie", command=self.start_video, state="disabled")
         self.video_btn.pack(side="left", padx=(0, 6))
-        self.toonz_btn = ttk.Button(actions, text="Open that video in OpenToonz", command=self.start_opentoonz, state="disabled")
-        self.toonz_btn.pack(side="left")
+        self.toonz_btn = ttk.Button(actions, text="Open in OpenToonz", command=self.start_opentoonz, state="disabled")
 
         left = tk.Frame(more, bg=BG)
         left.pack(anchor="w", padx=8, pady=8)
@@ -337,6 +358,7 @@ class App:
         self.status.config(text=label)
 
     def close_app(self):
+        self.stop_play()
         self.persist_keys()
         self.root.destroy()
 
@@ -530,19 +552,260 @@ class App:
         label = name or f"Person {len(self.parts) + 1}"
         person = ""
         mouths = {}
+        mouth_x, mouth_y, mouth_s = 50.0, 62.0, 28.0
         for item in self.cast or list_cast():
             if (item.get("name") or "") == label:
                 loaded = load_cast(item["id"])
                 person = loaded.get("avatar") or ""
                 mouths = dict(loaded.get("mouths") or {})
+                mouth_x = float(loaded.get("mouthX") or 50)
+                mouth_y = float(loaded.get("mouthY") or 62)
+                mouth_s = float(loaded.get("mouthScale") or 28)
                 break
+        index = len(self.parts)
         self.parts.append({
             "name": tk.StringVar(value=label),
             "audio": "",
             "person": person,
             "mouths": mouths,
+            "x": 0.02 + index * 0.16,
+            "y": 0.42,
+            "h": 0.5,
+            "mouthX": mouth_x,
+            "mouthY": mouth_y,
+            "mouthScale": mouth_s,
         })
         self.refresh_parts()
+
+    def draw_scene(self):
+        from PIL import Image, ImageTk
+
+        if not hasattr(self, "scene"):
+            return
+        width, height = self.scene_w, self.scene_h
+        self.scene.delete("all")
+        if self.bg_image and Path(self.bg_image).exists():
+            plate = paint_stage({"image": self.bg_image}, (width, height)).convert("RGBA")
+        else:
+            plate = paint_stage({"preset": self.part_bg.get() or "coffee shop"}, (width, height)).convert("RGBA")
+        self._scene_bg = ImageTk.PhotoImage(plate)
+        self.scene.create_image(0, 0, image=self._scene_bg, anchor="nw")
+        self._scene_photos = []
+        playing = self._play_started is not None
+        now = time.time() - self._play_started if playing else 0
+        for index, slot in enumerate(self.parts):
+            path = slot.get("person") or ""
+            if not path or not Path(path).exists():
+                slot["_box"] = None
+                slot["_mouth_box"] = None
+                continue
+            portrait = Image.open(path).convert("RGBA")
+            ph = max(48, int(float(slot.get("h") or 0.5) * height))
+            pw = max(24, int(ph * portrait.width / max(1, portrait.height)))
+            portrait = portrait.resize((pw, ph), Image.LANCZOS)
+            px = int(float(slot.get("x") or 0) * width)
+            py = int(float(slot.get("y") or 0) * height)
+            mouths = slot.get("mouths") or {}
+            shape = "closed"
+            if playing:
+                shape = mouth_at(self._play_cues.get(slot["name"].get().strip()) or [], now)
+            mouth_path = mouths.get(shape) or mouths.get("closed") or ""
+            mouth_box = None
+            if mouth_path and Path(mouth_path).exists():
+                mouth = Image.open(mouth_path).convert("RGBA")
+                mw = max(12, int(pw * float(slot.get("mouthScale") or 28) / 100))
+                mh = max(8, int(mouth.height * mw / max(1, mouth.width)))
+                mouth = mouth.resize((mw, mh), Image.LANCZOS)
+                ox = int(pw * float(slot.get("mouthX") or 50) / 100) - mw // 2
+                oy = int(ph * float(slot.get("mouthY") or 62) / 100) - mh // 2
+                portrait.paste(mouth, (ox, oy), mouth)
+                mouth_box = (px + ox, py + oy, mw, mh)
+            photo = ImageTk.PhotoImage(portrait)
+            self._scene_photos.append(photo)
+            self.scene.create_image(px, py, image=photo, anchor="nw")
+            slot["_box"] = (px, py, pw, ph)
+            slot["_mouth_box"] = mouth_box
+            if index == self.scene_index:
+                self.scene.create_rectangle(px, py, px + pw, py + ph, outline="#c45c26", width=2)
+                self.scene.create_rectangle(px + pw - 14, py + ph - 14, px + pw, py + ph, fill="#c45c26", outline="")
+                if mouth_box:
+                    mx, my, mw, mh = mouth_box
+                    self.scene.create_rectangle(mx, my, mx + mw, my + mh, outline="#f6f1e7")
+                    self.scene.create_rectangle(mx + mw - 10, my + mh - 10, mx + mw, my + mh, fill="#f6f1e7", outline="")
+        fg_path = self.fg.get("path") or ""
+        self.fg["_box"] = None
+        if fg_path and Path(fg_path).exists():
+            front = Image.open(fg_path).convert("RGBA")
+            fh = max(24, int(float(self.fg.get("h") or 0.4) * height))
+            fw = max(24, int(fh * front.width / max(1, front.height)))
+            front = front.resize((fw, fh), Image.LANCZOS)
+            fx = int(float(self.fg.get("x") or 0) * width)
+            fy = int(float(self.fg.get("y") or 0) * height)
+            photo = ImageTk.PhotoImage(front)
+            self._scene_photos.append(photo)
+            self.scene.create_image(fx, fy, image=photo, anchor="nw")
+            self.fg["_box"] = (fx, fy, fw, fh)
+            self.scene.create_rectangle(fx, fy, fx + fw, fy + fh, outline="#d4b483")
+            self.scene.create_rectangle(fx + fw - 14, fy + fh - 14, fx + fw, fy + fh, fill="#d4b483", outline="")
+
+    def _scene_hit(self, event):
+        box = self.fg.get("_box")
+        if box and self.fg.get("path"):
+            px, py, pw, ph = box
+            if px + pw - 16 <= event.x <= px + pw + 6 and py + ph - 16 <= event.y <= py + ph + 6:
+                return "fg-size", -1
+            if px <= event.x <= px + pw and py <= event.y <= py + ph:
+                return "fg-move", -1
+        for index in range(len(self.parts) - 1, -1, -1):
+            slot = self.parts[index]
+            box = slot.get("_box")
+            if not box:
+                continue
+            px, py, pw, ph = box
+            mouth = slot.get("_mouth_box")
+            if mouth:
+                mx, my, mw, mh = mouth
+                if mx + mw - 14 <= event.x <= mx + mw + 6 and my + mh - 14 <= event.y <= my + mh + 6:
+                    return "mouth-size", index
+                if mx <= event.x <= mx + mw and my <= event.y <= my + mh:
+                    return "mouth", index
+            if px + pw - 16 <= event.x <= px + pw + 6 and py + ph - 16 <= event.y <= py + ph + 6:
+                return "resize", index
+            if px <= event.x <= px + pw and py <= event.y <= py + ph:
+                return "move", index
+        return None
+
+    def scene_down(self, event):
+        hit = self._scene_hit(event)
+        if not hit:
+            self.drag = None
+            return
+        kind, index = hit
+        if index < 0:
+            self.drag = (
+                kind, -1, event.x, event.y,
+                float(self.fg["x"]), float(self.fg["y"]), float(self.fg["h"]),
+                0, 0, 0, self.fg.get("_box"),
+            )
+            self.draw_scene()
+            return
+        self.scene_index = index
+        slot = self.parts[index]
+        self.drag = (
+            kind,
+            index,
+            event.x,
+            event.y,
+            float(slot["x"]),
+            float(slot["y"]),
+            float(slot["h"]),
+            float(slot["mouthX"]),
+            float(slot["mouthY"]),
+            float(slot["mouthScale"]),
+            slot.get("_box"),
+        )
+        self.draw_scene()
+
+    def scene_drag(self, event):
+        if not self.drag:
+            return
+        kind, index, x0, y0, sx, sy, sh, mx, my, ms, box = self.drag
+        if index < 0:
+            if kind == "fg-move":
+                self.fg["x"] = sx + (event.x - x0) / self.scene_w
+                self.fg["y"] = sy + (event.y - y0) / self.scene_h
+            elif kind == "fg-size":
+                self.fg["h"] = max(0.08, min(1.2, sh + (event.y - y0) / self.scene_h))
+            self.draw_scene()
+            return
+        slot = self.parts[index]
+        if kind == "move":
+            slot["x"] = sx + (event.x - x0) / self.scene_w
+            slot["y"] = sy + (event.y - y0) / self.scene_h
+        elif kind == "resize":
+            slot["h"] = max(0.16, min(0.95, sh + (event.y - y0) / self.scene_h))
+        elif box and kind == "mouth":
+            slot["mouthX"] = max(8, min(92, mx + (event.x - x0) / max(1, box[2]) * 100))
+            slot["mouthY"] = max(8, min(92, my + (event.y - y0) / max(1, box[3]) * 100))
+        elif box and kind == "mouth-size":
+            slot["mouthScale"] = max(8, min(70, ms + (event.x - x0) / max(1, box[2]) * 100))
+        self.draw_scene()
+
+    def play_episode(self):
+        ready = []
+        for slot in self.parts:
+            if slot.get("audio") and slot.get("person"):
+                ready.append({
+                    "name": slot["name"].get().strip() or "Person",
+                    "audio": slot["audio"],
+                })
+        if not ready:
+            messagebox.showwarning("Add audio", "Each person you want to hear needs an audio file and a picture.")
+            return
+        self.play_btn.config(state="disabled")
+        self.show_busy("Getting the mouths ready")
+        threading.Thread(target=self._prepare_play, args=(ready,), daemon=True).start()
+
+    def _prepare_play(self, people):
+        try:
+            from podcast_processor import _mix_wav, _pcm
+
+            raws = []
+            cues = {}
+            duration = 1
+            out = Path.home() / "Desktop" / "Podcast Processor"
+            out.mkdir(parents=True, exist_ok=True)
+            total = len(people)
+            for index, person in enumerate(people):
+                self.root.after(0, lambda i=index, n=total, name=person["name"]: self.show_progress((i + 1) / n * 0.8, f"Reading {name}"))
+                raw = _pcm(Path(person["audio"]))
+                raws.append(raw)
+                duration = max(duration, (len(raw) / 2) / 16000)
+                try:
+                    cues[person["name"]] = build_cues(person["audio"], {"language": "en", "segments": []})
+                except Exception as exc:
+                    cues[person["name"]] = []
+                    self.root.after(0, lambda e=exc, name=person["name"]: self.write(f"{name} will use a simple mouth. {e}\n"))
+            mix = out / "scene-mix.wav"
+            _mix_wav(raws, mix)
+            self.root.after(0, lambda: self._start_play(str(mix), cues, duration))
+        except Exception as exc:
+            self.root.after(0, lambda e=exc: self._fail(e))
+            self.root.after(0, lambda: self.play_btn.config(state="normal"))
+
+    def stop_play(self):
+        self._play_token += 1
+        self._play_started = None
+        player = getattr(self, "_player", None)
+        if player is not None and player.poll() is None:
+            player.terminate()
+        self._player = None
+        if hasattr(self, "scene"):
+            self.draw_scene()
+
+    def _start_play(self, mix, cues, duration):
+        self.stop_play()
+        self._play_cues = cues
+        self._play_duration = duration
+        self._play_started = time.time()
+        self.play_btn.config(state="normal")
+        self.show_done("Playing")
+        if sys.platform == "darwin":
+            self._player = subprocess.Popen(["afplay", mix])
+        else:
+            self._player = None
+        token = self._play_token
+        self._tick_play(token)
+
+    def _tick_play(self, token):
+        if token != self._play_token or self._play_started is None:
+            return
+        if time.time() - self._play_started > self._play_duration + 0.2:
+            self.stop_play()
+            self.show_done("Ready")
+            return
+        self.draw_scene()
+        self.root.after(90, lambda: self._tick_play(token))
 
     def remove_part(self, index):
         if 0 <= index < len(self.parts):
@@ -555,14 +818,130 @@ class App:
         for index, slot in enumerate(self.parts):
             row = tk.Frame(self.parts_box, bg=BG)
             row.pack(fill="x", pady=2)
-            ttk.Entry(row, textvariable=slot["name"], width=12).pack(side="left")
-            ttk.Button(row, text="Audio", command=lambda i=index: self.pick_part_audio(i)).pack(side="left", padx=3)
-            tk.Label(row, text=Path(slot["audio"]).name if slot["audio"] else "no audio", bg=BG, fg=INK, width=16, anchor="w").pack(side="left")
-            ttk.Button(row, text="Picture", command=lambda i=index: self.pick_part_person(i)).pack(side="left", padx=3)
-            tk.Label(row, text=Path(slot["person"]).name if slot["person"] else "no picture", bg=BG, fg=INK, width=16, anchor="w").pack(side="left")
-            ttk.Button(row, text="Mouths", command=lambda i=index: self.pick_part_mouths(i)).pack(side="left", padx=3)
-            count = len(slot["mouths"])
-            tk.Label(row, text=f"{count} mouths" if count else "no mouths", bg=BG, fg=INK, width=10, anchor="w").pack(side="left")
+            ttk.Button(row, text=slot["name"].get() or "Person", command=lambda i=index: self.open_person(i)).pack(side="left")
+            bits = []
+            if slot.get("audio"):
+                bits.append("audio")
+            if slot.get("person"):
+                bits.append("profile")
+            if slot.get("mouths"):
+                bits.append("mouth")
+            tk.Label(row, text=", ".join(bits) if bits else "not set up", bg=BG, fg=INK).pack(side="left", padx=8)
+        if hasattr(self, "scene"):
+            self.draw_scene()
+
+    def open_person(self, index):
+        if not (0 <= index < len(self.parts)):
+            return
+        slot = self.parts[index]
+        win = tk.Toplevel(self.root)
+        win.title(slot["name"].get() or "Person")
+        win.configure(bg=BG)
+        win.transient(self.root)
+        tk.Label(win, text="Name", bg=BG, fg=INK).pack(anchor="w", padx=16, pady=(12, 0))
+        ttk.Entry(win, textvariable=slot["name"], width=28).pack(anchor="w", padx=16)
+        audio_label = tk.Label(win, text=Path(slot["audio"]).name if slot.get("audio") else "No audio yet", bg=BG, fg=INK)
+        profile_label = tk.Label(win, text=Path(slot["person"]).name if slot.get("person") else "No profile yet", bg=BG, fg=INK)
+        mouth_label = tk.Label(win, text=self._mouth_status(slot), bg=BG, fg=INK)
+
+        def choose_audio():
+            path = filedialog.askopenfilename(parent=win, filetypes=[("Audio", "*.mp3 *.wav *.m4a *.mp4")])
+            if path:
+                slot["audio"] = path
+                audio_label.config(text=Path(path).name)
+                self.refresh_parts()
+
+        def choose_profile():
+            path = filedialog.askopenfilename(parent=win, filetypes=[("Picture", "*.png *.jpg *.jpeg *.webp")])
+            if path:
+                slot["person"] = path
+                profile_label.config(text=Path(path).name)
+                self.refresh_parts()
+
+        def choose_mouth():
+            self.pick_part_mouths(index)
+            mouth_label.config(text=self._mouth_status(slot))
+            self.draw_scene()
+
+        tk.Label(win, text="Audio", bg=BG, fg=INK).pack(anchor="w", padx=16, pady=(12, 0))
+        ttk.Button(win, text="Choose audio", command=choose_audio).pack(anchor="w", padx=16)
+        audio_label.pack(anchor="w", padx=16)
+        tk.Label(win, text="Profile", bg=BG, fg=INK).pack(anchor="w", padx=16, pady=(12, 0))
+        ttk.Button(win, text="Choose profile", command=choose_profile).pack(anchor="w", padx=16)
+        profile_label.pack(anchor="w", padx=16)
+        tk.Label(win, text="Mouth", bg=BG, fg=INK).pack(anchor="w", padx=16, pady=(12, 0))
+        ttk.Button(win, text="Choose mouth pictures", command=choose_mouth).pack(anchor="w", padx=16)
+        mouth_label.pack(anchor="w", padx=16)
+        ttk.Button(win, text="Done", command=win.destroy).pack(anchor="w", padx=16, pady=16)
+
+    def _mouth_status(self, slot):
+        count = len(slot.get("mouths") or {})
+        return f"{count} mouth pictures" if count else "No mouth yet"
+
+    def scene_open_person(self, event):
+        hit = self._scene_hit(event)
+        if hit and hit[1] >= 0 and hit[0] in ("move", "mouth", "mouth-size", "resize"):
+            self.open_person(hit[1])
+
+    def open_background(self):
+        win = tk.Toplevel(self.root)
+        win.title("Background")
+        win.configure(bg=BG)
+        win.transient(self.root)
+        tk.Label(win, text="This layer sits behind everyone.", bg=BG, fg=INK).pack(anchor="w", padx=16, pady=(12, 0))
+        room = ttk.Combobox(win, values=("coffee shop", "library"), width=16, state="readonly")
+        room.set(self.part_bg.get() or "coffee shop")
+        room.pack(anchor="w", padx=16, pady=8)
+
+        def use_room(_event=None):
+            self.part_bg.set(room.get())
+            self.bg_image = ""
+            self.draw_scene()
+
+        room.bind("<<ComboboxSelected>>", use_room)
+        status = tk.Label(win, text=Path(self.bg_image).name if self.bg_image else "Using the room", bg=BG, fg=INK)
+        status.pack(anchor="w", padx=16)
+
+        def choose():
+            path = filedialog.askopenfilename(parent=win, filetypes=[("Picture", "*.png *.jpg *.jpeg *.webp")])
+            if path:
+                self.bg_image = path
+                status.config(text=Path(path).name)
+                self.draw_scene()
+
+        def clear():
+            self.bg_image = ""
+            status.config(text="Using the room")
+            self.draw_scene()
+
+        ttk.Button(win, text="Choose a picture", command=choose).pack(anchor="w", padx=16, pady=(8, 0))
+        ttk.Button(win, text="Use the room instead", command=clear).pack(anchor="w", padx=16, pady=4)
+        ttk.Button(win, text="Done", command=win.destroy).pack(anchor="w", padx=16, pady=12)
+
+    def open_foreground(self):
+        win = tk.Toplevel(self.root)
+        win.title("Foreground")
+        win.configure(bg=BG)
+        win.transient(self.root)
+        tk.Label(win, text="This layer sits in front of the people. Drag it on the scene.", bg=BG, fg=INK).pack(anchor="w", padx=16, pady=(12, 0))
+        status = tk.Label(win, text=Path(self.fg["path"]).name if self.fg.get("path") else "No foreground yet", bg=BG, fg=INK)
+        status.pack(anchor="w", padx=16, pady=8)
+
+        def choose():
+            path = filedialog.askopenfilename(parent=win, filetypes=[("Picture", "*.png *.jpg *.jpeg *.webp")])
+            if path:
+                self.fg["path"] = path
+                status.config(text=Path(path).name)
+                self.draw_scene()
+
+        def clear():
+            self.fg["path"] = ""
+            status.config(text="No foreground yet")
+            self.draw_scene()
+
+        ttk.Button(win, text="Choose a picture", command=choose).pack(anchor="w", padx=16)
+        ttk.Button(win, text="Remove foreground", command=clear).pack(anchor="w", padx=16, pady=4)
+        ttk.Button(win, text="Done", command=win.destroy).pack(anchor="w", padx=16, pady=12)
 
     def pick_part_audio(self, index):
         path = filedialog.askopenfilename(filetypes=[("Audio", "*.mp3 *.wav *.m4a *.mp4")])
@@ -844,10 +1223,14 @@ class App:
 
 
     def _build_puppet(self, parent):
-        tk.Label(parent, text="Move the mouth, then set how big this person stands.", bg=BG, fg=INK).pack(anchor="w", padx=8, pady=(8, 0))
+        tk.Label(parent, text="Mouth shapes. Place people on the Episode scene.", bg=BG, fg=INK).pack(anchor="w", padx=8, pady=(8, 0))
         self.preview = tk.Label(parent, bg=BG, fg=INK)
         self.preview.pack(anchor="w", padx=8, pady=4)
         self.mouth_shape = tk.StringVar(value="closed")
+        self.mouth_x = tk.DoubleVar(value=50)
+        self.mouth_y = tk.DoubleVar(value=64)
+        self.mouth_s = tk.DoubleVar(value=22)
+        self.puppet_scale = tk.DoubleVar(value=100)
         shapes = tk.Frame(parent, bg=BG)
         shapes.pack(anchor="w", padx=8)
         for name in ("closed", "small", "medium", "wide", "round", "teeth"):
@@ -855,18 +1238,6 @@ class App:
                 shapes, text=name, value=name, variable=self.mouth_shape,
                 command=self.refresh_puppet_preview,
             ).pack(side="left")
-        self.puppet_scale = tk.Scale(parent, label="Puppet size", from_=60, to=160, orient="horizontal", bg=BG, fg=INK, troughcolor=FIELD, highlightbackground=BG, activebackground=BG, command=lambda _v: self.refresh_puppet_preview())
-        self.puppet_scale.set(100)
-        self.puppet_scale.pack(fill="x", padx=8)
-        self.mouth_x = tk.Scale(parent, label="Mouth sideways", from_=30, to=70, orient="horizontal", bg=BG, fg=INK, troughcolor=FIELD, highlightbackground=BG, activebackground=BG, command=lambda _v: self.refresh_puppet_preview())
-        self.mouth_x.set(50)
-        self.mouth_x.pack(fill="x", padx=8)
-        self.mouth_y = tk.Scale(parent, label="Mouth height", from_=48, to=80, orient="horizontal", bg=BG, fg=INK, troughcolor=FIELD, highlightbackground=BG, activebackground=BG, command=lambda _v: self.refresh_puppet_preview())
-        self.mouth_y.set(64)
-        self.mouth_y.pack(fill="x", padx=8)
-        self.mouth_s = tk.Scale(parent, label="Mouth size", from_=10, to=40, orient="horizontal", bg=BG, fg=INK, troughcolor=FIELD, highlightbackground=BG, activebackground=BG, command=lambda _v: self.refresh_puppet_preview())
-        self.mouth_s.set(22)
-        self.mouth_s.pack(fill="x", padx=8)
         ttk.Button(parent, text="Save puppet", command=self.save_puppet).pack(anchor="w", padx=8, pady=6)
 
     def refresh_puppet_preview(self):
