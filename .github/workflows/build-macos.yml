@@ -97,6 +97,14 @@ jobs:
           PLIST="dist/PodcastProcessor.app/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Delete :NSRequiresAquaSystemAppearance" "$PLIST" || true
           /usr/libexec/PlistBuddy -c "Add :NSRequiresAquaSystemAppearance bool true" "$PLIST"
+          RH=$(find dist/PodcastProcessor.app -type f -name rhubarb | head -1)
+          test -n "$RH"
+          if [ ! -d "$(dirname "$RH")/res" ]; then
+            RES=$(find dist/PodcastProcessor.app -type d -name res | head -1)
+            test -n "$RES"
+            cp -R "$RES" "$(dirname "$RH")/res"
+          fi
+          test -d "$(dirname "$RH")/res"
           codesign --force --deep --sign - "dist/PodcastProcessor.app" || true
           ditto -c -k --keepParent "dist/PodcastProcessor.app" PodcastProcessor-macOS.zip
 

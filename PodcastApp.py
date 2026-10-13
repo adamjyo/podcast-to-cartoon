@@ -1111,11 +1111,19 @@ class App:
             out.mkdir(parents=True, exist_ok=True)
             total = len(people)
             for index, person in enumerate(people):
-                self.root.after(0, lambda i=index, n=total, name=person["name"]: self.show_progress((i + 1) / n * 0.8, f"Reading {name}"))
+                self.root.after(0, lambda i=index, n=total, name=person["name"]: self.show_progress((i + 0.2) / n, f"Rhubarb is reading {name}"))
                 raw = _pcm(Path(person["audio"]))
                 raws.append(raw)
                 duration = max(duration, (len(raw) / 2) / 16000)
-                cues[person["name"]] = self._talking_cues(raw)
+
+                def report(amount, label, name=person["name"], i=index, n=total):
+                    self.root.after(0, lambda a=amount, lab=label: self.show_progress((i + a) / n, f"{name}: {lab}"))
+
+                try:
+                    cues[person["name"]] = build_cues(person["audio"], {"language": "en", "segments": []}, report)
+                except Exception as exc:
+                    cues[person["name"]] = self._talking_cues(raw)
+                    self.root.after(0, lambda e=exc, name=person["name"]: self.write(f"{name}: Rhubarb did not finish, so the mouth follows the volume. {e}\n"))
             mix = out / "scene-mix.wav"
             _mix_wav(raws, mix)
             self.root.after(0, lambda: self._start_play(str(mix), cues, duration))
@@ -1124,27 +1132,50 @@ class App:
             self.root.after(0, lambda: self.play_btn.config(state="normal"))
 
     def _talking_cues(self, raw):
-        from podcast_processor import _speech_spans
+        import array
 
-        shapes = ("small", "medium", "wide", "round", "teeth", "medium", "small", "wide")
+        samples = array.array("h")
+        samples.frombytes(raw)
+        frame = 800
+        if len(samples) < frame:
+            return []
+        levels = []
+        for start in range(0, len(samples) - frame, frame):
+            acc = 0
+            crossings = 0
+            prev = 0
+            for sample in samples[start : start + frame]:
+                acc += sample * sample
+                if (sample >= 0) != (prev >= 0):
+                    crossings += 1
+                prev = sample
+            levels.append(((acc / frame) ** 0.5, crossings / frame))
+        ordered = sorted(level for level, _cross in levels)
+        noise = ordered[max(0, int(len(ordered) * 0.35) - 1)] or 1
+        peak = ordered[min(len(ordered) - 1, int(len(ordered) * 0.92))] or noise * 4
+        span = max(40, peak - noise)
+        step = frame / 16000
         cues = []
-        for start, end in _speech_spans(raw):
-            moment = start
-            index = 0
-            while moment < end:
-                nxt = min(end, moment + 0.1)
-                cues.append({"start": moment, "end": nxt, "mouth": shapes[index % len(shapes)]})
-                moment = nxt
-                index += 1
-        if not cues and raw:
-            end = max(0.2, (len(raw) / 2) / 16000)
-            moment = 0.0
-            index = 0
-            while moment < end:
-                nxt = min(end, moment + 0.1)
-                cues.append({"start": moment, "end": nxt, "mouth": shapes[index % len(shapes)]})
-                moment = nxt
-                index += 1
+        for index, (level, rate) in enumerate(levels):
+            if level < max(40, noise * 1.6):
+                mouth = "closed"
+            else:
+                openness = (level - noise) / span
+                if rate > 0.16 and openness > 0.35:
+                    mouth = "teeth"
+                elif openness > 0.72:
+                    mouth = "wide"
+                elif openness > 0.42:
+                    mouth = "round" if rate < 0.07 else "medium"
+                elif openness > 0.18:
+                    mouth = "small"
+                else:
+                    mouth = "closed"
+            begin = index * step
+            if cues and cues[-1]["mouth"] == mouth:
+                cues[-1]["end"] = begin + step
+            else:
+                cues.append({"start": begin, "end": begin + step, "mouth": mouth})
         return cues
 
     def stop_play(self):

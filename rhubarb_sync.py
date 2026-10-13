@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -61,12 +62,48 @@ def _search_roots():
 def find_rhubarb():
     found = shutil.which("rhubarb")
     if found:
-        return Path(found)
+        binary = Path(found)
+        _place_res(binary)
+        return binary
+    names = ("rhubarb", "rhubarb.exe")
+    candidates = []
     for root in _search_roots():
-        candidate = root / "rhubarb"
-        if candidate.is_file():
+        for name in names:
+            candidates.append(root / name)
+    if getattr(sys, "frozen", False):
+        exe = Path(sys.executable).resolve()
+        for folder in (exe.parent, exe.parent / "_internal", exe.parent.parent / "Frameworks", exe.parent.parent / "Resources"):
+            for name in names:
+                candidates.append(folder / name)
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            _place_res(candidate)
             return candidate
     return None
+
+
+def _place_res(binary: Path):
+    beside = binary.parent / "res"
+    if any(beside.glob("*")) if beside.is_dir() else False:
+        return
+    sources = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        sources.append(Path(meipass) / "res")
+    sources.append(binary.parent.parent / "Resources" / "res")
+    sources.append(binary.parent / "_internal" / "res")
+    for source in sources:
+        if source.is_dir() and any(source.iterdir()):
+            beside.mkdir(parents=True, exist_ok=True)
+            for item in source.iterdir():
+                dest = beside / item.name
+                if dest.exists():
+                    continue
+                if item.is_dir():
+                    shutil.copytree(item, dest)
+                else:
+                    shutil.copy2(item, dest)
+            return
 
 
 def _dialog_text(result) -> str:
@@ -101,7 +138,7 @@ def _to_wav(audio_path: Path, wav_path: Path):
         raise RuntimeError(f"Could not prepare audio for lip sync. {tail}")
 
 
-def _run(binary: Path, wav_path: Path, dialog_path: Path, recognizer: str, out_path: Path):
+def _run(binary: Path, wav_path: Path, dialog_path: Path, recognizer: str, out_path: Path, use_dialog: bool):
     cmd = [
         str(binary),
         "-f",
@@ -111,12 +148,10 @@ def _run(binary: Path, wav_path: Path, dialog_path: Path, recognizer: str, out_p
         "--extendedShapes",
         "GHX",
         "--machineReadable",
-        "-d",
-        str(dialog_path),
-        "-o",
-        str(out_path),
-        str(wav_path),
     ]
+    if use_dialog:
+        cmd.extend(["-d", str(dialog_path)])
+    cmd.extend(["-o", str(out_path), str(wav_path)])
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0 or not out_path.exists():
         tail = ((proc.stderr or "") + "\n" + (proc.stdout or ""))[-800:]
@@ -152,15 +187,17 @@ def build_cues(audio_path: str, result, progress=None) -> list:
         dialog_path = work / "dialog.txt"
         out_path = work / "cues.json"
         tick(0.12, "Preparing the recording")
-        dialog_path.write_text(_dialog_text(result), encoding="utf-8")
+        dialog = _dialog_text(result)
+        dialog_path.write_text(dialog, encoding="utf-8")
         _to_wav(Path(audio_path), wav_path)
-        tick(0.4, "Matching mouths to the voices")
+        recognizer = "phonetic" if not dialog else recognizer
+        tick(0.4, "Rhubarb is matching the mouths")
         try:
-            cues = _run(binary, wav_path, dialog_path, recognizer, out_path)
+            cues = _run(binary, wav_path, dialog_path, recognizer, out_path, bool(dialog))
         except RuntimeError:
             if recognizer == "phonetic":
                 raise
-            cues = _run(binary, wav_path, dialog_path, "phonetic", out_path)
+            cues = _run(binary, wav_path, dialog_path, "phonetic", out_path, False)
         tick(1, "Mouths matched")
         return cues
     finally:
