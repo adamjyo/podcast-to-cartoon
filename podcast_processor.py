@@ -79,11 +79,37 @@ def _accepts(fn, name):
         return False
 
 
-def _load_asr(whisperx, model, threads):
+def _clear_stale_locks():
+    root = Path(os.environ.get("HF_HOME") or (Path.home() / ".cache" / "huggingface"))
+    if not root.exists():
+        return
+    for lock in root.rglob("*.lock"):
+        try:
+            lock.unlink()
+        except OSError:
+            pass
+
+
+def _load_asr(whisperx, model, threads, token):
+    os.environ["HF_TOKEN"] = token
+    os.environ["HUGGING_FACE_HUB_TOKEN"] = token
+    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
+    os.environ["HF_HUB_ETAG_TIMEOUT"] = "15"
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+    _clear_stale_locks()
     kwargs = {"compute_type": "int8"}
     if _accepts(whisperx.load_model, "threads"):
-        kwargs["threads"] = threads
-    return whisperx.load_model(model, "cpu", **kwargs)
+        kwargs["threads"] = max(1, min(threads, 4))
+    if _accepts(whisperx.load_model, "vad_method"):
+        kwargs["vad_method"] = "silero"
+    if token and _accepts(whisperx.load_model, "use_auth_token"):
+        kwargs["use_auth_token"] = token
+    try:
+        return whisperx.load_model(model, "cpu", **kwargs)
+    except TypeError:
+        kwargs.pop("vad_method", None)
+        kwargs.pop("use_auth_token", None)
+        return whisperx.load_model(model, "cpu", **kwargs)
 
 
 def _metal_device(profile):
@@ -132,8 +158,8 @@ def process_audio(
     chip = profile["chip"]
     ram = f"{profile['ram_gb']:.0f} GB"
     tick(0.04, f"This Mac is {chip}, {ram}. Preparing {profile['threads']} cores")
-    tick(0.06, "Downloading the speech model if this Mac does not have it yet")
-    model_obj = _load_asr(whisperx, model, profile["threads"])
+    tick(0.06, "Loading the speech model. A first run downloads it, then this moves on")
+    model_obj = _load_asr(whisperx, model, profile["threads"], hf_token)
     audio = whisperx.load_audio(str(audio_path))
     lang = None if not language or language == "auto" else language
 

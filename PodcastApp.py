@@ -294,7 +294,7 @@ class App:
         else:
             timing = f"{_clock(elapsed)} gone"
         if stalled and pct < 15:
-            timing += ". Still downloading the speech model"
+            timing += ". Still on the speech model. Quit and reopen if this stays here"
         self.bar.stop()
         self.bar.config(mode="determinate", maximum=100)
         self.bar["value"] = pct
