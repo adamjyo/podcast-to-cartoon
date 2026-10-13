@@ -129,24 +129,10 @@ class App:
         tk.Label(root, text="Podcast to Cartoon", font=("Helvetica", 20, "bold"), bg=BG, fg=INK).pack(pady=(12, 2))
         tk.Label(
             root,
-            text="Place each puppet, design the set, then make the video.",
+            text="Fill in each person, pick a room, then make the episode.",
             bg=BG,
             fg=INK,
         ).pack()
-
-        keys = tk.Frame(root, bg=BG)
-        keys.pack(pady=8)
-        tk.Label(keys, text="Hugging Face token", bg=BG, fg=INK).grid(row=0, column=0, sticky="w")
-        self.hf = ttk.Entry(keys, width=42, show="*")
-        self.hf.grid(row=0, column=1, padx=6)
-        if cfg.get("hf"):
-            self.hf.insert(0, cfg["hf"])
-        tk.Label(keys, text="xAI key (drawing only)", bg=BG, fg=INK).grid(row=1, column=0, sticky="w")
-        self.xai = ttk.Entry(keys, width=42, show="*")
-        self.xai.grid(row=1, column=1, padx=6, pady=4)
-        if cfg.get("xai"):
-            self.xai.insert(0, cfg["xai"])
-        ttk.Button(keys, text="Save keys", command=self.save_keys).grid(row=0, column=2, rowspan=2, padx=6)
 
         self.bar = ttk.Progressbar(root, style="Gold.Horizontal.TProgressbar", mode="determinate", maximum=100)
         self.bar.pack(side="bottom", fill="x", padx=16, pady=(0, 8), ipady=6)
@@ -160,90 +146,110 @@ class App:
         self._pulse_on = False
         self._same_since = None
 
-        body = tk.Frame(root, bg=BG)
-        body.pack(fill="both", expand=True, padx=12, pady=6)
-        left = tk.Frame(body, bg=BG)
-        left.pack(side="left", fill="y")
-        tk.Label(left, text="Saved cast", bg=BG, fg=INK, font=("Helvetica", 13, "bold")).pack(anchor="w")
-        self.cast_list = tk.Listbox(left, width=28, height=12, bg=FIELD, fg=INK, selectbackground="#5c5346", selectforeground=INK, highlightbackground=BG, highlightcolor=LINE)
-        self.cast_list.pack(pady=4)
-        self.cast_list.bind("<<ListboxSelect>>", self.on_select)
-        row = tk.Frame(left, bg=BG)
-        row.pack()
-        ttk.Button(row, text="Add headshot", command=self.add_headshot).pack(side="left", padx=2)
-        ttk.Button(row, text="Remove", command=self.remove_selected).pack(side="left", padx=2)
-        tk.Label(left, text="Name", bg=BG, fg=INK).pack(anchor="w", pady=(8, 0))
-        self.name = ttk.Entry(left, width=28)
-        self.name.pack()
-        tk.Label(left, text="Note for the drawing", bg=BG, fg=INK).pack(anchor="w")
-        self.note = ttk.Entry(left, width=28)
-        self.note.pack()
-        self.portrait = tk.Label(left, bg=FIELD)
-        self.portrait.pack(pady=(8, 4))
-        self.portrait_photo = None
-        ttk.Button(left, text="Draw avatar", command=self.start_draw).pack(pady=4, fill="x")
-        ttk.Button(left, text="Cut mouths", command=self.start_mouths).pack(fill="x")
-        ttk.Button(left, text="Keep avatar", command=self.keep_selected).pack(pady=4, fill="x")
-
-        right = tk.Frame(body, bg=BG)
-        right.pack(side="left", fill="both", expand=True, padx=(16, 0))
-        book = ttk.Notebook(right)
+        book = ttk.Notebook(root)
         self.book = book
-        book.pack(fill="both", expand=True)
+        book.pack(fill="both", expand=True, padx=12, pady=6)
         episode = tk.Frame(book, bg=BG)
-        puppet = tk.Frame(book, bg=BG)
+        more = tk.Frame(book, bg=BG)
+        puppet = tk.Frame(more, bg=BG)
         self.puppet_tab = puppet
-        studio = tk.Frame(book, bg=BG)
+        studio = tk.Frame(more, bg=BG)
         book.add(episode, text="Episode")
-        book.add(puppet, text="Puppet")
-        book.add(studio, text="Set")
-        ttk.Button(episode, text="Choose audio", command=self.choose_audio).pack(anchor="w", padx=8, pady=(8, 0))
-        ttk.Button(episode, text="Or choose one file per person", command=self.choose_tracks).pack(anchor="w", padx=8, pady=(4, 0))
-        self.audio_label = tk.Label(episode, text="No audio yet", bg=BG, fg=INK)
-        self.audio_label.pack(anchor="w", padx=8)
+        book.add(more, text="More")
+
         tk.Label(
             episode,
-            text="Group of up to 6. For each person, add audio, their picture, and mouth pictures.",
+            text="Up to six people. Each row needs a name, an audio file, a picture, and mouth pictures.",
             bg=BG,
             fg=INK,
-        ).pack(anchor="w", padx=8, pady=(8, 0))
+        ).pack(anchor="w", padx=8, pady=(10, 0))
         group_tools = tk.Frame(episode, bg=BG)
-        group_tools.pack(anchor="w", padx=8, pady=4)
-        ttk.Button(group_tools, text="Add a person", command=self.add_part).pack(side="left")
-        tk.Label(group_tools, text="Background", bg=BG, fg=INK).pack(side="left", padx=(12, 4))
+        group_tools.pack(anchor="w", padx=8, pady=8)
+        tk.Label(group_tools, text="Room", bg=BG, fg=INK).pack(side="left")
         self.part_bg = ttk.Combobox(group_tools, values=("coffee shop", "library"), width=14, state="readonly")
         self.part_bg.set("coffee shop")
-        self.part_bg.pack(side="left")
-        ttk.Button(group_tools, text="Export group to OpenToonz", command=self.export_group).pack(side="left", padx=8)
+        self.part_bg.pack(side="left", padx=6)
+        ttk.Button(group_tools, text="Make the episode", command=self.export_group).pack(side="left", padx=8)
         self.parts_box = tk.Frame(episode, bg=BG)
         self.parts_box.pack(anchor="w", fill="x", padx=8)
-        spins = tk.Frame(episode, bg=BG)
+        self.log = scrolledtext.ScrolledText(episode, height=4, width=70, bg=FIELD, fg=INK, insertbackground=INK, selectbackground="#5c5346", highlightbackground=BG)
+        self.log.pack(fill="both", expand=True, padx=8, pady=6)
+
+        keys = tk.Frame(more, bg=BG)
+        keys.pack(anchor="w", padx=8, pady=8)
+        tk.Label(keys, text="Hugging Face token", bg=BG, fg=INK).grid(row=0, column=0, sticky="w")
+        self.hf = ttk.Entry(keys, width=42, show="*")
+        self.hf.grid(row=0, column=1, padx=6)
+        if cfg.get("hf"):
+            self.hf.insert(0, cfg["hf"])
+        tk.Label(keys, text="xAI key, only for drawing", bg=BG, fg=INK).grid(row=1, column=0, sticky="w")
+        self.xai = ttk.Entry(keys, width=42, show="*")
+        self.xai.grid(row=1, column=1, padx=6, pady=4)
+        if cfg.get("xai"):
+            self.xai.insert(0, cfg["xai"])
+        ttk.Button(keys, text="Save keys", command=self.save_keys).grid(row=0, column=2, rowspan=2, padx=6)
+
+        old = tk.Frame(more, bg=BG)
+        old.pack(anchor="w", padx=8, pady=4)
+        ttk.Button(old, text="Choose one mixed recording", command=self.choose_audio).pack(side="left")
+        self.audio_label = tk.Label(old, text="No mixed recording", bg=BG, fg=INK)
+        self.audio_label.pack(side="left", padx=8)
+        spins = tk.Frame(more, bg=BG)
         spins.pack(anchor="w", padx=8, pady=4)
-        tk.Label(spins, text="Min", bg=BG, fg=INK).pack(side="left")
+        tk.Label(spins, text="Speakers from", bg=BG, fg=INK).pack(side="left")
         self.min_sp = ttk.Spinbox(spins, from_=2, to=8, width=4)
         self.min_sp.delete(0, "end")
         self.min_sp.insert(0, "4")
         self.min_sp.pack(side="left", padx=4)
-        tk.Label(spins, text="Max", bg=BG, fg=INK).pack(side="left")
+        tk.Label(spins, text="to", bg=BG, fg=INK).pack(side="left")
         self.max_sp = ttk.Spinbox(spins, from_=2, to=8, width=4)
         self.max_sp.delete(0, "end")
         self.max_sp.insert(0, "5")
         self.max_sp.pack(side="left", padx=4)
-        self.go = ttk.Button(episode, text="1. Find speakers", command=self.start_process)
-        self.go.pack(anchor="w", padx=8, pady=4)
-        self.assign = tk.Frame(episode, bg=BG)
+        self.go = ttk.Button(spins, text="Find speakers in the mix", command=self.start_process)
+        self.go.pack(side="left", padx=8)
+        self.assign = tk.Frame(more, bg=BG)
         self.assign.pack(anchor="w", fill="x", padx=8, pady=4)
-        self.video_btn = ttk.Button(episode, text="2. Make cartoon video", command=self.start_video, state="disabled")
-        self.video_btn.pack(anchor="w", padx=8, pady=4)
-        self.toonz_btn = ttk.Button(episode, text="3. Open in OpenToonz", command=self.start_opentoonz, state="disabled")
-        self.toonz_btn.pack(anchor="w", padx=8, pady=4)
-        self.log = scrolledtext.ScrolledText(episode, height=5, width=70, bg=FIELD, fg=INK, insertbackground=INK, selectbackground="#5c5346", highlightbackground=BG)
-        self.log.pack(fill="both", expand=True, pady=6)
+        actions = tk.Frame(more, bg=BG)
+        actions.pack(anchor="w", padx=8)
+        self.video_btn = ttk.Button(actions, text="Make cartoon video", command=self.start_video, state="disabled")
+        self.video_btn.pack(side="left", padx=(0, 6))
+        self.toonz_btn = ttk.Button(actions, text="Open that video in OpenToonz", command=self.start_opentoonz, state="disabled")
+        self.toonz_btn.pack(side="left")
+
+        left = tk.Frame(more, bg=BG)
+        left.pack(anchor="w", padx=8, pady=8)
+        tk.Label(left, text="Saved cast", bg=BG, fg=INK, font=("Helvetica", 13, "bold")).pack(anchor="w")
+        self.cast_list = tk.Listbox(left, width=28, height=6, bg=FIELD, fg=INK, selectbackground="#5c5346", selectforeground=INK, highlightbackground=BG, highlightcolor=LINE)
+        self.cast_list.pack(pady=4, anchor="w")
+        self.cast_list.bind("<<ListboxSelect>>", self.on_select)
+        row = tk.Frame(left, bg=BG)
+        row.pack(anchor="w")
+        ttk.Button(row, text="Add headshot", command=self.add_headshot).pack(side="left", padx=2)
+        ttk.Button(row, text="Remove", command=self.remove_selected).pack(side="left", padx=2)
+        tk.Label(left, text="Name", bg=BG, fg=INK).pack(anchor="w", pady=(8, 0))
+        self.name = ttk.Entry(left, width=28)
+        self.name.pack(anchor="w")
+        tk.Label(left, text="Note for the drawing", bg=BG, fg=INK).pack(anchor="w")
+        self.note = ttk.Entry(left, width=28)
+        self.note.pack(anchor="w")
+        self.portrait = tk.Label(left, bg=FIELD)
+        self.portrait.pack(pady=(8, 4), anchor="w")
+        self.portrait_photo = None
+        draw_row = tk.Frame(left, bg=BG)
+        draw_row.pack(anchor="w")
+        ttk.Button(draw_row, text="Draw avatar", command=self.start_draw).pack(side="left", padx=2)
+        ttk.Button(draw_row, text="Cut mouths", command=self.start_mouths).pack(side="left", padx=2)
+        ttk.Button(draw_row, text="Keep avatar", command=self.keep_selected).pack(side="left", padx=2)
         self._build_puppet(puppet)
         self._build_set(studio)
-        self.write("Kept avatars live in this Mac account and can be reused on the next episode.\n")
+        puppet.pack(anchor="w", fill="x")
+        studio.pack(anchor="w", fill="x")
+        for name in ("Adam", "Ben", "Corey", "Emily", "Abby R", "Abby S"):
+            self.add_part(name)
+        self.write("Fill the rows you need. Empty rows are skipped.\n")
         if cfg.get("hf") or cfg.get("xai"):
-            self.write("Saved keys loaded.\n")
+            self.write("Saved keys loaded. They are under More.\n")
         self.hf.bind("<FocusOut>", lambda _e: self.persist_keys())
         self.xai.bind("<FocusOut>", lambda _e: self.persist_keys())
         root.protocol("WM_DELETE_WINDOW", self.close_app)
@@ -517,15 +523,24 @@ class App:
         except Exception as exc:
             self.root.after(0, lambda e=exc: self._fail(e))
 
-    def add_part(self):
+    def add_part(self, name=None):
         if len(self.parts) >= 6:
-            messagebox.showinfo("Six people", "A group can have six people. Remove one to add another.")
+            messagebox.showinfo("Six people", "A group already has six people.")
             return
+        label = name or f"Person {len(self.parts) + 1}"
+        person = ""
+        mouths = {}
+        for item in self.cast or list_cast():
+            if (item.get("name") or "") == label:
+                loaded = load_cast(item["id"])
+                person = loaded.get("avatar") or ""
+                mouths = dict(loaded.get("mouths") or {})
+                break
         self.parts.append({
-            "name": tk.StringVar(value=f"Person {len(self.parts) + 1}"),
+            "name": tk.StringVar(value=label),
             "audio": "",
-            "person": "",
-            "mouths": {},
+            "person": person,
+            "mouths": mouths,
         })
         self.refresh_parts()
 
@@ -543,12 +558,11 @@ class App:
             ttk.Entry(row, textvariable=slot["name"], width=12).pack(side="left")
             ttk.Button(row, text="Audio", command=lambda i=index: self.pick_part_audio(i)).pack(side="left", padx=3)
             tk.Label(row, text=Path(slot["audio"]).name if slot["audio"] else "no audio", bg=BG, fg=INK, width=16, anchor="w").pack(side="left")
-            ttk.Button(row, text="Person", command=lambda i=index: self.pick_part_person(i)).pack(side="left", padx=3)
+            ttk.Button(row, text="Picture", command=lambda i=index: self.pick_part_person(i)).pack(side="left", padx=3)
             tk.Label(row, text=Path(slot["person"]).name if slot["person"] else "no picture", bg=BG, fg=INK, width=16, anchor="w").pack(side="left")
             ttk.Button(row, text="Mouths", command=lambda i=index: self.pick_part_mouths(i)).pack(side="left", padx=3)
             count = len(slot["mouths"])
             tk.Label(row, text=f"{count} mouths" if count else "no mouths", bg=BG, fg=INK, width=10, anchor="w").pack(side="left")
-            ttk.Button(row, text="Remove", command=lambda i=index: self.remove_part(i)).pack(side="left")
 
     def pick_part_audio(self, index):
         path = filedialog.askopenfilename(filetypes=[("Audio", "*.mp3 *.wav *.m4a *.mp4")])
