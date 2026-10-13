@@ -157,6 +157,73 @@ def draw_mouths(avatar_path: str, api_key: str) -> dict:
     return split_mouth_sheet(sheet)
 
 
+def parse_mouth_sheet(path, dest_dir) -> dict:
+    """Cut a 3-by-2 mouth sheet into the six shapes the scene uses."""
+    image = Image.open(path).convert("RGBA")
+    width, height = image.size
+    dest = Path(dest_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+    saved = {}
+    for index, name in enumerate(MOUTH_NAMES):
+        col, row = index % 3, index // 3
+        cell = image.crop(
+            (
+                round(col * width / 3),
+                round(row * height / 2),
+                round((col + 1) * width / 3),
+                round((row + 1) * height / 2),
+            )
+        )
+        cell = _clear_paper(cell)
+        box = cell.getbbox()
+        if box:
+            cell = cell.crop(box)
+        file = dest / f"{name}.png"
+        cell.save(file, format="PNG")
+        saved[name] = str(file)
+    return saved
+
+
+def _clear_paper(cell):
+    cell = cell.convert("RGBA")
+    width, height = cell.size
+    if width < 2 or height < 2:
+        return cell
+    pixels = cell.load()
+    corners = (
+        pixels[0, 0],
+        pixels[width - 1, 0],
+        pixels[0, height - 1],
+        pixels[width - 1, height - 1],
+    )
+    red = sum(color[0] for color in corners) // 4
+    green = sum(color[1] for color in corners) // 4
+    blue = sum(color[2] for color in corners) // 4
+
+    def paper(x, y):
+        pr, pg, pb, _alpha = pixels[x, y]
+        return abs(pr - red) < 46 and abs(pg - green) < 46 and abs(pb - blue) < 46
+
+    seen = bytearray(width * height)
+    stack = [(x, 0) for x in range(width)]
+    stack += [(x, height - 1) for x in range(width)]
+    stack += [(0, y) for y in range(height)]
+    stack += [(width - 1, y) for y in range(height)]
+    while stack:
+        x, y = stack.pop()
+        if x < 0 or y < 0 or x >= width or y >= height:
+            continue
+        mark = y * width + x
+        if seen[mark] or not paper(x, y):
+            seen[mark] = 1
+            continue
+        seen[mark] = 1
+        pr, pg, pb, _alpha = pixels[x, y]
+        pixels[x, y] = (pr, pg, pb, 0)
+        stack.extend(((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)))
+    return cell
+
+
 def split_mouth_sheet(blob: bytes) -> dict:
     image = Image.open(BytesIO(blob)).convert("RGBA")
     w, h = image.size
