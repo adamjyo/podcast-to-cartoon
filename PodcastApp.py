@@ -22,7 +22,7 @@ os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 os.environ["CURL_CA_BUNDLE"] = certifi.where()
 
 from cast_library import SUPPORT, forget_cast, install_included, keep_cast, list_cast, load_cast, update_puppet
-from draw_avatar import draw_avatar, draw_background, draw_mouths
+from draw_avatar import draw_avatar, draw_background, draw_mouths, parse_mouth_sheet
 from podcast_processor import process_audio, process_tracks, speakers_in
 from podcast_video import PALETTE, preview_puppet, render_cartoon
 from rhubarb_sync import build_cues, mouth_at
@@ -114,20 +114,30 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title("Podcast to Cartoon")
-        root.geometry("980x820")
+        root.geometry("1040x1040")
         apply_dark(root)
         self.audio = None
         self.tracks = []
         self.parts = []
         self.scene_index = 0
         self.drag = None
-        self.scene_w = 880
-        self.scene_h = 340
+        self.scene_w = 960
+        self.scene_h = 540
+        self.zoom = 1.0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+        self.playhead = 0.0
+        self._play_offset = 0.0
+        self._play_duration = 60.0
+        self.view_start = 0.0
+        self.view_span = 60.0
+        self.camera_keys = [{"t": 0.0, "zoom": 1.0, "pan_x": 0.0, "pan_y": 0.0}]
         self._play_started = None
         self._play_cues = {}
         self._play_token = 0
         self._player = None
         self.bg_image = ""
+        self.bg = {"x": 0.0, "y": 0.0, "h": 1.0}
         self.fg = {"path": "", "x": 0.0, "y": 0.58, "h": 0.42}
         self.result = None
         self.cast = []
@@ -171,7 +181,7 @@ class App:
 
         tk.Label(
             episode,
-            text="Drag people and mouths on the scene. Empty rows are skipped when you press Play.",
+            text="Drag the playhead to a moment. Camera in zooms the view. Right-drag slides the camera.",
             bg=BG,
             fg=INK,
         ).pack(anchor="w", padx=8, pady=(10, 0))
@@ -181,6 +191,17 @@ class App:
         self.scene.bind("<B1-Motion>", self.scene_drag)
         self.scene.bind("<ButtonRelease-1>", lambda _e: setattr(self, "drag", None))
         self.scene.bind("<Double-Button-1>", self.scene_open_person)
+        self.scene.bind("<MouseWheel>", self.scene_wheel)
+        self.scene.bind("<Button-4>", self.scene_wheel)
+        self.scene.bind("<Button-5>", self.scene_wheel)
+        self.scene.bind("<Button-3>", self.scene_pan_down)
+        self.scene.bind("<B3-Motion>", self.scene_pan_drag)
+        self.scene.bind("<Button-2>", self.scene_pan_down)
+        self.scene.bind("<B2-Motion>", self.scene_pan_drag)
+        self.track = tk.Canvas(episode, width=self.scene_w, height=64, bg="#141a17", highlightthickness=0)
+        self.track.pack(anchor="w", padx=8, pady=(4, 0))
+        self.track.bind("<Button-1>", self.track_down)
+        self.track.bind("<B1-Motion>", self.track_drag)
         group_tools = tk.Frame(episode, bg=BG)
         group_tools.pack(anchor="w", padx=8, pady=8)
         ttk.Button(group_tools, text="Background", command=self.open_background).pack(side="left")
@@ -192,6 +213,9 @@ class App:
         self.play_btn = ttk.Button(group_tools, text="Play", command=self.play_episode)
         self.play_btn.pack(side="left", padx=8)
         ttk.Button(group_tools, text="Stop", command=self.stop_play).pack(side="left")
+        ttk.Button(group_tools, text="Camera in", command=lambda: self.zoom_by(1.25)).pack(side="left", padx=(12, 0))
+        ttk.Button(group_tools, text="Camera out", command=lambda: self.zoom_by(0.8)).pack(side="left", padx=4)
+        ttk.Button(group_tools, text="Full scene", command=self.zoom_fit).pack(side="left")
         self.parts_box = tk.Frame(episode, bg=BG)
         self.parts_box.pack(anchor="w", fill="x", padx=8)
         self.log = scrolledtext.ScrolledText(episode, height=4, width=70, bg=FIELD, fg=INK, insertbackground=INK, selectbackground="#5c5346", highlightbackground=BG)
@@ -577,22 +601,120 @@ class App:
         })
         self.refresh_parts()
 
+    def _screen_box(self, x, y, w, h):
+        z = self.zoom
+        return (
+            int((x - self.pan_x) * z),
+            int((y - self.pan_y) * z),
+            max(1, int(w * z)),
+            max(1, int(h * z)),
+        )
+
+    def zoom_by(self, factor):
+        self._zoom_at(self.scene_w / 2, self.scene_h / 2, self.zoom * factor)
+
+    def zoom_fit(self):
+        self.zoom = 1.0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+        self.remember_camera()
+        self.draw_scene()
+
+    def _zoom_at(self, sx, sy, new_zoom):
+        new_zoom = max(0.4, min(6.0, new_zoom))
+        world_x = sx / self.zoom + self.pan_x
+        world_y = sy / self.zoom + self.pan_y
+        self.zoom = new_zoom
+        self.pan_x = world_x - sx / self.zoom
+        self.pan_y = world_y - sy / self.zoom
+        self.remember_camera()
+        self.draw_scene()
+
+    def remember_camera(self):
+        shot = {
+            "t": round(float(self.playhead), 2),
+            "zoom": float(self.zoom),
+            "pan_x": float(self.pan_x),
+            "pan_y": float(self.pan_y),
+        }
+        for key in self.camera_keys:
+            if abs(key["t"] - shot["t"]) < 0.08:
+                key.update(shot)
+                return
+        self.camera_keys.append(shot)
+        self.camera_keys.sort(key=lambda item: item["t"])
+
+    def apply_camera(self):
+        keys = sorted(self.camera_keys, key=lambda item: item["t"])
+        if not keys:
+            return
+        t = float(self.playhead)
+        if t <= keys[0]["t"]:
+            left = right = keys[0]
+            blend = 0
+        elif t >= keys[-1]["t"]:
+            left = right = keys[-1]
+            blend = 0
+        else:
+            left, right = keys[0], keys[-1]
+            for earlier, later in zip(keys, keys[1:]):
+                if earlier["t"] <= t <= later["t"]:
+                    left, right = earlier, later
+                    break
+            blend = (t - left["t"]) / max(0.001, right["t"] - left["t"])
+        self.zoom = left["zoom"] + (right["zoom"] - left["zoom"]) * blend
+        self.pan_x = left["pan_x"] + (right["pan_x"] - left["pan_x"]) * blend
+        self.pan_y = left["pan_y"] + (right["pan_y"] - left["pan_y"]) * blend
+
+    def scene_wheel(self, event):
+        if getattr(event, "num", None) == 5 or getattr(event, "delta", 0) < 0:
+            factor = 0.85
+        else:
+            factor = 1.18
+        self._zoom_at(event.x, event.y, self.zoom * factor)
+
+    def scene_pan_down(self, event):
+        self._pan_drag = (event.x, event.y, self.pan_x, self.pan_y)
+
+    def scene_pan_drag(self, event):
+        if not getattr(self, "_pan_drag", None):
+            return
+        x0, y0, px, py = self._pan_drag
+        self.pan_x = px - (event.x - x0) / self.zoom
+        self.pan_y = py - (event.y - y0) / self.zoom
+        self.remember_camera()
+        self.draw_scene()
+
     def draw_scene(self):
         from PIL import Image, ImageTk
 
         if not hasattr(self, "scene"):
             return
+        self.apply_camera()
         width, height = self.scene_w, self.scene_h
         self.scene.delete("all")
-        if self.bg_image and Path(self.bg_image).exists():
-            plate = paint_stage({"image": self.bg_image}, (width, height)).convert("RGBA")
-        else:
-            plate = paint_stage({"preset": self.part_bg.get() or "coffee shop"}, (width, height)).convert("RGBA")
-        self._scene_bg = ImageTk.PhotoImage(plate)
-        self.scene.create_image(0, 0, image=self._scene_bg, anchor="nw")
+        self.scene.create_rectangle(0, 0, width, height, fill="#1c2420", outline="")
         self._scene_photos = []
+        bg_key = self.bg_image or (self.part_bg.get() or "coffee shop")
+        if getattr(self, "_bg_key", None) != bg_key:
+            self._bg_key = bg_key
+            if self.bg_image and Path(self.bg_image).exists():
+                self._bg_source = Image.open(self.bg_image).convert("RGBA")
+            else:
+                self._bg_source = paint_stage({"preset": bg_key}, (1280, 720)).convert("RGBA")
+        source = self._bg_source
+        bh = max(40, int(float(self.bg.get("h") or 1) * height))
+        bw = max(40, int(bh * source.width / max(1, source.height)))
+        bx, by, bw, bh = self._screen_box(float(self.bg.get("x") or 0) * width, float(self.bg.get("y") or 0) * height, bw, bh)
+        bg = source.resize((bw, bh), Image.LANCZOS)
+        bg_photo = ImageTk.PhotoImage(bg)
+        self._scene_photos.append(bg_photo)
+        self.scene.create_image(bx, by, image=bg_photo, anchor="nw")
+        self.bg["_box"] = (bx, by, bw, bh)
+        self.scene.create_rectangle(bx, by, bx + bw, by + bh, outline="#8d9a86")
+        self.scene.create_rectangle(bx + bw - 22, by + bh - 22, bx + bw, by + bh, fill="#8d9a86", outline="")
         playing = self._play_started is not None
-        now = time.time() - self._play_started if playing else 0
+        now = (time.time() - self._play_started + self._play_offset) if playing else self.playhead
         for index, slot in enumerate(self.parts):
             path = slot.get("person") or ""
             if not path or not Path(path).exists():
@@ -603,14 +725,12 @@ class App:
             ph = max(48, int(float(slot.get("h") or 0.5) * height))
             pw = max(24, int(ph * portrait.width / max(1, portrait.height)))
             portrait = portrait.resize((pw, ph), Image.LANCZOS)
-            px = int(float(slot.get("x") or 0) * width)
-            py = int(float(slot.get("y") or 0) * height)
             mouths = slot.get("mouths") or {}
             shape = "closed"
             if playing:
                 shape = mouth_at(self._play_cues.get(slot["name"].get().strip()) or [], now)
             mouth_path = mouths.get(shape) or mouths.get("closed") or ""
-            mouth_box = None
+            ox = oy = mw = mh = 0
             if mouth_path and Path(mouth_path).exists():
                 mouth = Image.open(mouth_path).convert("RGBA")
                 mw = max(12, int(pw * float(slot.get("mouthScale") or 28) / 100))
@@ -619,40 +739,117 @@ class App:
                 ox = int(pw * float(slot.get("mouthX") or 50) / 100) - mw // 2
                 oy = int(ph * float(slot.get("mouthY") or 62) / 100) - mh // 2
                 portrait.paste(mouth, (ox, oy), mouth)
-                mouth_box = (px + ox, py + oy, mw, mh)
+            px, py, sw, sh = self._screen_box(
+                float(slot.get("x") or 0) * width,
+                float(slot.get("y") or 0) * height,
+                pw,
+                ph,
+            )
+            portrait = portrait.resize((sw, sh), Image.LANCZOS)
             photo = ImageTk.PhotoImage(portrait)
             self._scene_photos.append(photo)
             self.scene.create_image(px, py, image=photo, anchor="nw")
-            slot["_box"] = (px, py, pw, ph)
+            slot["_box"] = (px, py, sw, sh)
+            if mw:
+                mouth_box = (
+                    px + int(ox * self.zoom),
+                    py + int(oy * self.zoom),
+                    max(1, int(mw * self.zoom)),
+                    max(1, int(mh * self.zoom)),
+                )
+            else:
+                mouth_box = None
             slot["_mouth_box"] = mouth_box
-            if index == self.scene_index:
-                self.scene.create_rectangle(px, py, px + pw, py + ph, outline="#c45c26", width=2)
-                self.scene.create_rectangle(px + pw - 14, py + ph - 14, px + pw, py + ph, fill="#c45c26", outline="")
-                if mouth_box:
-                    mx, my, mw, mh = mouth_box
-                    self.scene.create_rectangle(mx, my, mx + mw, my + mh, outline="#f6f1e7")
-                    self.scene.create_rectangle(mx + mw - 10, my + mh - 10, mx + mw, my + mh, fill="#f6f1e7", outline="")
+            self.scene.create_rectangle(px + sw - 22, py + sh - 22, px + sw, py + sh, fill="#c45c26", outline="")
+            if mouth_box:
+                mx, my, mw, mh = mouth_box
+                self.scene.create_rectangle(mx + mw - 16, my + mh - 16, mx + mw, my + mh, fill="#f6f1e7", outline="")
         fg_path = self.fg.get("path") or ""
         self.fg["_box"] = None
         if fg_path and Path(fg_path).exists():
             front = Image.open(fg_path).convert("RGBA")
             fh = max(24, int(float(self.fg.get("h") or 0.4) * height))
             fw = max(24, int(fh * front.width / max(1, front.height)))
+            fx, fy, fw, fh = self._screen_box(
+                float(self.fg.get("x") or 0) * width,
+                float(self.fg.get("y") or 0) * height,
+                fw,
+                fh,
+            )
             front = front.resize((fw, fh), Image.LANCZOS)
-            fx = int(float(self.fg.get("x") or 0) * width)
-            fy = int(float(self.fg.get("y") or 0) * height)
             photo = ImageTk.PhotoImage(front)
             self._scene_photos.append(photo)
             self.scene.create_image(fx, fy, image=photo, anchor="nw")
             self.fg["_box"] = (fx, fy, fw, fh)
-            self.scene.create_rectangle(fx, fy, fx + fw, fy + fh, outline="#d4b483")
-            self.scene.create_rectangle(fx + fw - 14, fy + fh - 14, fx + fw, fy + fh, fill="#d4b483", outline="")
+            self.scene.create_rectangle(fx + fw - 22, fy + fh - 22, fx + fw, fy + fh, fill="#d4b483", outline="")
+        self.draw_track()
+
+    def _clock(self, seconds):
+        seconds = max(0, int(seconds))
+        return f"{seconds // 60}:{seconds % 60:02d}"
+
+    def _track_x(self, t):
+        span = max(0.5, self.view_span)
+        return int((t - self.view_start) / span * (self.scene_w - 16) + 8)
+
+    def track_time(self, x):
+        span = max(0.5, self.view_span)
+        t = self.view_start + (x - 8) / max(1, self.scene_w - 16) * span
+        return max(0.0, min(float(self._play_duration or t), t))
+
+    def track_down(self, event):
+        self.stop_play()
+        self.playhead = self.track_time(event.x)
+        self.draw_scene()
+
+    def track_drag(self, event):
+        self.playhead = self.track_time(event.x)
+        self.draw_scene()
+
+    def draw_track(self):
+        if not hasattr(self, "track"):
+            return
+        colors = ("#c45c26", "#d4b483", "#8d9a86", "#6d8a9a", "#a36b7c", "#c4a35a")
+        width, height = self.scene_w, 64
+        self.track.delete("all")
+        self.track.create_rectangle(0, 0, width, height, fill="#141a17", outline="")
+        duration = max(1.0, float(self._play_duration or 60))
+        self.view_span = max(2.0, min(duration, self.view_span))
+        self.view_start = max(0.0, min(duration - self.view_span, self.view_start))
+        names = list((self._play_cues or {}).keys())
+        rows = max(1, len(names))
+        row_h = (height - 8) / rows
+        if not names:
+            self.track.create_text(12, height / 2, text="Playhead", anchor="w", fill="#f6f1e7", font=("Helvetica", 11))
+        for index, name in enumerate(names):
+            top = 4 + index * row_h
+            self.track.create_text(8, top, text=name[:12], anchor="nw", fill="#f6f1e7", font=("Helvetica", 9))
+            for cue in self._play_cues.get(name) or []:
+                x0 = self._track_x(float(cue.get("start") or 0))
+                x1 = self._track_x(float(cue.get("end") or 0))
+                if x1 < 8 or x0 > width - 8:
+                    continue
+                self.track.create_rectangle(
+                    max(8, x0), top + 14, min(width - 8, max(x0 + 2, x1)), top + row_h - 2,
+                    fill=colors[index % len(colors)], outline="",
+                )
+        for key in self.camera_keys:
+            mark = self._track_x(key["t"])
+            self.track.create_oval(mark - 4, height - 10, mark + 4, height - 2, fill="#d4b483", outline="")
+        px = self._track_x(self.playhead)
+        self.track.create_line(px, 0, px, height, fill="#f6f1e7", width=2)
+        self.track.create_polygon(px - 7, 0, px + 7, 0, px, 12, fill="#f6f1e7", outline="")
+        self.track.create_text(
+            width - 8, 4,
+            text=f"{self._clock(self.playhead)} / {self._clock(duration)}",
+            anchor="ne", fill="#f6f1e7", font=("Helvetica", 10),
+        )
 
     def _scene_hit(self, event):
         box = self.fg.get("_box")
         if box and self.fg.get("path"):
             px, py, pw, ph = box
-            if px + pw - 16 <= event.x <= px + pw + 6 and py + ph - 16 <= event.y <= py + ph + 6:
+            if px + pw - 22 <= event.x <= px + pw + 8 and py + ph - 22 <= event.y <= py + ph + 8:
                 return "fg-size", -1
             if px <= event.x <= px + pw and py <= event.y <= py + ph:
                 return "fg-move", -1
@@ -665,14 +862,21 @@ class App:
             mouth = slot.get("_mouth_box")
             if mouth:
                 mx, my, mw, mh = mouth
-                if mx + mw - 14 <= event.x <= mx + mw + 6 and my + mh - 14 <= event.y <= my + mh + 6:
+                if mx + mw - 18 <= event.x <= mx + mw + 8 and my + mh - 18 <= event.y <= my + mh + 8:
                     return "mouth-size", index
                 if mx <= event.x <= mx + mw and my <= event.y <= my + mh:
                     return "mouth", index
-            if px + pw - 16 <= event.x <= px + pw + 6 and py + ph - 16 <= event.y <= py + ph + 6:
+            if px + pw - 22 <= event.x <= px + pw + 8 and py + ph - 22 <= event.y <= py + ph + 8:
                 return "resize", index
             if px <= event.x <= px + pw and py <= event.y <= py + ph:
                 return "move", index
+        box = self.bg.get("_box")
+        if box:
+            px, py, pw, ph = box
+            if px + pw - 22 <= event.x <= px + pw + 8 and py + ph - 22 <= event.y <= py + ph + 8:
+                return "bg-size", -2
+            if px <= event.x <= px + pw and py <= event.y <= py + ph:
+                return "bg-move", -2
         return None
 
     def scene_down(self, event):
@@ -682,10 +886,11 @@ class App:
             return
         kind, index = hit
         if index < 0:
+            layer = self.fg if index == -1 else self.bg
             self.drag = (
-                kind, -1, event.x, event.y,
-                float(self.fg["x"]), float(self.fg["y"]), float(self.fg["h"]),
-                0, 0, 0, self.fg.get("_box"),
+                kind, index, event.x, event.y,
+                float(layer["x"]), float(layer["y"]), float(layer["h"]),
+                0, 0, 0, layer.get("_box"),
             )
             self.draw_scene()
             return
@@ -711,24 +916,28 @@ class App:
             return
         kind, index, x0, y0, sx, sy, sh, mx, my, ms, box = self.drag
         if index < 0:
-            if kind == "fg-move":
-                self.fg["x"] = sx + (event.x - x0) / self.scene_w
-                self.fg["y"] = sy + (event.y - y0) / self.scene_h
-            elif kind == "fg-size":
-                self.fg["h"] = max(0.08, min(1.2, sh + (event.y - y0) / self.scene_h))
+            layer = self.fg if index == -1 else self.bg
+            if box and kind in ("fg-size", "bg-size"):
+                grow = max((event.x - x0) / max(1, box[2]), (event.y - y0) / max(1, box[3]))
+                layer["h"] = max(0.08, min(3.0, sh * (1 + grow)))
+            elif kind in ("fg-move", "bg-move"):
+                layer["x"] = sx + (event.x - x0) / self.zoom / self.scene_w
+                layer["y"] = sy + (event.y - y0) / self.zoom / self.scene_h
             self.draw_scene()
             return
         slot = self.parts[index]
         if kind == "move":
-            slot["x"] = sx + (event.x - x0) / self.scene_w
-            slot["y"] = sy + (event.y - y0) / self.scene_h
-        elif kind == "resize":
-            slot["h"] = max(0.16, min(0.95, sh + (event.y - y0) / self.scene_h))
+            slot["x"] = sx + (event.x - x0) / self.zoom / self.scene_w
+            slot["y"] = sy + (event.y - y0) / self.zoom / self.scene_h
+        elif kind == "resize" and box:
+            grow = max((event.x - x0) / max(1, box[2]), (event.y - y0) / max(1, box[3]))
+            slot["h"] = max(0.08, min(2.0, sh * (1 + grow)))
         elif box and kind == "mouth":
             slot["mouthX"] = max(8, min(92, mx + (event.x - x0) / max(1, box[2]) * 100))
             slot["mouthY"] = max(8, min(92, my + (event.y - y0) / max(1, box[3]) * 100))
         elif box and kind == "mouth-size":
-            slot["mouthScale"] = max(8, min(70, ms + (event.x - x0) / max(1, box[2]) * 100))
+            grow = max((event.x - x0) / 80, (event.y - y0) / 80)
+            slot["mouthScale"] = max(4, min(120, ms * (1 + grow)))
         self.draw_scene()
 
     def play_episode(self):
@@ -787,23 +996,50 @@ class App:
         self.stop_play()
         self._play_cues = cues
         self._play_duration = duration
+        if self.view_span > duration or abs(self.view_span - 60) < 0.1:
+            self.view_span = duration
+            self.view_start = 0
+        audio, offset = self._audio_from(mix)
+        self._play_offset = offset
+        self.playhead = offset
         self._play_started = time.time()
         self.play_btn.config(state="normal")
         self.show_done("Playing")
         if sys.platform == "darwin":
-            self._player = subprocess.Popen(["afplay", mix])
+            self._player = subprocess.Popen(["afplay", audio])
         else:
             self._player = None
         token = self._play_token
         self._tick_play(token)
 
+    def _audio_from(self, mix):
+        start = max(0.0, float(self.playhead))
+        if start < 0.3:
+            return mix, 0.0
+        try:
+            import imageio_ffmpeg
+
+            dest = Path(mix).with_name("scene-from-here.wav")
+            subprocess.run(
+                [imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-ss", f"{start:.3f}", "-i", mix, str(dest)],
+                check=True,
+                capture_output=True,
+            )
+            return str(dest), start
+        except Exception:
+            return mix, 0.0
+
     def _tick_play(self, token):
         if token != self._play_token or self._play_started is None:
             return
-        if time.time() - self._play_started > self._play_duration + 0.2:
+        self.playhead = time.time() - self._play_started + self._play_offset
+        if self.playhead > self._play_duration:
+            self.playhead = self._play_duration
             self.stop_play()
             self.show_done("Ready")
             return
+        if self.playhead < self.view_start or self.playhead > self.view_start + self.view_span:
+            self.view_start = max(0.0, self.playhead - self.view_span * 0.15)
         self.draw_scene()
         self.root.after(90, lambda: self._tick_play(token))
 
@@ -870,13 +1106,13 @@ class App:
         ttk.Button(win, text="Choose profile", command=choose_profile).pack(anchor="w", padx=16)
         profile_label.pack(anchor="w", padx=16)
         tk.Label(win, text="Mouth", bg=BG, fg=INK).pack(anchor="w", padx=16, pady=(12, 0))
-        ttk.Button(win, text="Choose mouth pictures", command=choose_mouth).pack(anchor="w", padx=16)
+        ttk.Button(win, text="Choose the 6-piece mouth image", command=choose_mouth).pack(anchor="w", padx=16)
         mouth_label.pack(anchor="w", padx=16)
         ttk.Button(win, text="Done", command=win.destroy).pack(anchor="w", padx=16, pady=16)
 
     def _mouth_status(self, slot):
         count = len(slot.get("mouths") or {})
-        return f"{count} mouth pictures" if count else "No mouth yet"
+        return f"{count} of 6 mouths" if count else "No mouth sheet yet"
 
     def scene_open_person(self, event):
         hit = self._scene_hit(event)
@@ -888,7 +1124,7 @@ class App:
         win.title("Background")
         win.configure(bg=BG)
         win.transient(self.root)
-        tk.Label(win, text="This layer sits behind everyone.", bg=BG, fg=INK).pack(anchor="w", padx=16, pady=(12, 0))
+        tk.Label(win, text="This layer sits behind everyone. Drag its corner to resize it.", bg=BG, fg=INK).pack(anchor="w", padx=16, pady=(12, 0))
         room = ttk.Combobox(win, values=("coffee shop", "library"), width=16, state="readonly")
         room.set(self.part_bg.get() or "coffee shop")
         room.pack(anchor="w", padx=16, pady=8)
@@ -923,7 +1159,7 @@ class App:
         win.title("Foreground")
         win.configure(bg=BG)
         win.transient(self.root)
-        tk.Label(win, text="This layer sits in front of the people. Drag it on the scene.", bg=BG, fg=INK).pack(anchor="w", padx=16, pady=(12, 0))
+        tk.Label(win, text="This layer sits in front of the people. Drag it to move it, and drag its corner to resize it.", bg=BG, fg=INK).pack(anchor="w", padx=16, pady=(12, 0))
         status = tk.Label(win, text=Path(self.fg["path"]).name if self.fg.get("path") else "No foreground yet", bg=BG, fg=INK)
         status.pack(anchor="w", padx=16, pady=8)
 
@@ -956,24 +1192,18 @@ class App:
             self.refresh_parts()
 
     def pick_part_mouths(self, index):
-        paths = filedialog.askopenfilenames(
-            title="Mouth pictures: closed, small, medium, wide, round, teeth",
+        path = filedialog.askopenfilename(
+            title="Mouth sheet: six mouths, three across and two down",
             filetypes=[("Pictures", "*.png *.jpg *.jpeg *.webp")],
         )
-        if not paths or not (0 <= index < len(self.parts)):
+        if not path or not (0 <= index < len(self.parts)):
             return
-        names = ("closed", "small", "medium", "wide", "round", "teeth")
-        mouths = {}
-        for path in paths:
-            stem = Path(path).stem.lower()
-            matched = next((name for name in names if name in stem and name not in mouths), None)
-            if matched:
-                mouths[matched] = path
-                continue
-            for name in names:
-                if name not in mouths:
-                    mouths[name] = path
-                    break
+        dest = SUPPORT / "mouth-sheets" / f"{index}-{Path(path).stem}"
+        try:
+            mouths = parse_mouth_sheet(path, dest)
+        except Exception as exc:
+            messagebox.showerror("Could not read that mouth sheet", str(exc))
+            return
         self.parts[index]["mouths"] = mouths
         self.refresh_parts()
 
