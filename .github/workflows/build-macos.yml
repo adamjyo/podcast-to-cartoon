@@ -46,6 +46,16 @@ jobs:
           )
           PY
           test -f vendor/speech-model/model.bin
+          python - << 'PY'
+          import base64
+          from pathlib import Path
+          folder = Path("vendor/backgrounds")
+          for name in ("coffee-shop", "library"):
+              raw = (folder / f"{name}.b64").read_text().strip()
+              (folder / f"{name}.jpg").write_bytes(base64.b64decode(raw))
+          PY
+          test -f vendor/backgrounds/coffee-shop.jpg
+          test -f vendor/backgrounds/library.jpg
 
       - name: Build app
         run: |
@@ -56,6 +66,7 @@ jobs:
             --collect-all certifi \
             --collect-all faster_whisper \
             --add-data "vendor/speech-model:speech-model" \
+            --add-data "vendor/backgrounds:backgrounds" \
             --add-binary "vendor/rhubarb/rhubarb:." \
             --add-data "vendor/rhubarb/res:res" \
             --hidden-import podcast_processor \

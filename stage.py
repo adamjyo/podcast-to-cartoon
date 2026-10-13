@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 from io import BytesIO
 from pathlib import Path
@@ -12,7 +13,25 @@ from PIL import Image, ImageDraw
 from cast_library import SUPPORT
 
 SETS = SUPPORT / "backgrounds"
-PRESETS = ("paper", "studio", "bookshelf", "night window")
+PRESETS = ("paper", "studio", "bookshelf", "night window", "coffee shop", "library")
+BUNDLED = {"coffee shop": "coffee-shop.jpg", "library": "library.jpg"}
+
+
+def bundled_background(name):
+    filename = BUNDLED.get(name)
+    if not filename:
+        return None
+    roots = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        roots.append(Path(meipass) / "backgrounds")
+    here = Path(__file__).resolve().parent
+    roots.extend([here / "vendor" / "backgrounds", here / "backgrounds"])
+    for root in roots:
+        path = root / filename
+        if path.is_file():
+            return path
+    return None
 
 
 def paint_stage(spec, size=(1280, 720)):
@@ -34,6 +53,9 @@ def _cover(picture, size):
 
 
 def _preset(name, size):
+    picture = bundled_background(name)
+    if picture:
+        return _cover(Image.open(picture).convert("RGB"), size)
     w, h = size
     if name == "studio":
         img = Image.new("RGB", size, "#efe2cf")
