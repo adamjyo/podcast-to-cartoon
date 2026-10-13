@@ -64,6 +64,16 @@ jobs:
           PY
           rm -rf vendor/included
           unzip -q vendor/included.zip -d vendor/included
+          python - << 'PY'
+          import base64
+          from pathlib import Path
+          raw = base64.b64decode(Path("vendor/cast-refresh.b64").read_text().strip())
+          Path("vendor/cast-refresh.zip").write_bytes(raw)
+          PY
+          unzip -qo vendor/cast-refresh.zip -d vendor
+          cp -R vendor/cast-refresh/. vendor/included/
+          test -f vendor/included/included-adam/mouths/teeth.png
+          test -f vendor/included/included-corey/avatar.png
           test -f vendor/included/included-adam/avatar.png
           python - << 'PY'
           from huggingface_hub import snapshot_download

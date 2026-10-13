@@ -16,6 +16,9 @@ def _meta_path(folder: Path) -> Path:
     return folder / "meta.json"
 
 
+INCLUDED_VERSION = "4"
+
+
 def install_included():
     roots = []
     bundled = getattr(sys, "_MEIPASS", None)
@@ -31,9 +34,13 @@ def install_included():
         if not folder.is_dir() or not (folder / "meta.json").exists():
             continue
         dest = CAST / folder.name
-        if dest.exists():
+        stamp = dest / ".included-version"
+        if dest.exists() and stamp.is_file() and stamp.read_text().strip() == INCLUDED_VERSION:
             continue
+        if dest.exists():
+            shutil.rmtree(dest)
         shutil.copytree(folder, dest)
+        (dest / ".included-version").write_text(INCLUDED_VERSION)
         added += 1
     return added
 

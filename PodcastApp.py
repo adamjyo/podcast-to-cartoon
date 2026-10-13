@@ -585,16 +585,16 @@ class App:
         label = name or f"Person {len(self.parts) + 1}"
         person = ""
         mouths = {}
-        mouth_x, mouth_y, mouth_s = 50.0, 62.0, 28.0
-        for item in self.cast or list_cast():
-            if (item.get("name") or "") == label:
-                loaded = load_cast(item["id"])
-                person = loaded.get("avatar") or ""
-                mouths = dict(loaded.get("mouths") or {})
-                mouth_x = float(loaded.get("mouthX") or 50)
-                mouth_y = float(loaded.get("mouthY") or 62)
-                mouth_s = float(loaded.get("mouthScale") or 28)
-                break
+        mouth_x, mouth_y, mouth_s = 50.0, 46.0, 16.0
+        matches = [item for item in (self.cast or list_cast()) if (item.get("name") or "") == label]
+        matches.sort(key=lambda item: (0 if str(item.get("id", "")).startswith("included-") else 1, -(item.get("savedAt") or 0)))
+        if matches:
+            loaded = load_cast(matches[0]["id"])
+            person = loaded.get("avatar") or ""
+            mouths = dict(loaded.get("mouths") or {})
+            mouth_x = float(loaded.get("mouthX") or 50)
+            mouth_y = float(loaded.get("mouthY") or 46)
+            mouth_s = float(loaded.get("mouthScale") or 16)
         index = len(self.parts)
         self.parts.append({
             "name": tk.StringVar(value=label),
