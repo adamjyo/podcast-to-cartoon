@@ -132,6 +132,9 @@ class App:
         self.view_start = 0.0
         self.view_span = 60.0
         self.camera_keys = [{"t": 0.0, "zoom": 1.0, "pan_x": 0.0, "pan_y": 0.0}]
+        self.selection = None
+        self.cropping = False
+        self._crop_rect = None
         self._play_started = None
         self._play_cues = {}
         self._play_token = 0
@@ -181,7 +184,7 @@ class App:
 
         tk.Label(
             episode,
-            text="Drag the playhead to a moment. Camera in zooms the view. Right-drag slides the camera.",
+            text="Uncheck On to leave a person out of this video.",
             bg=BG,
             fg=INK,
         ).pack(anchor="w", padx=8, pady=(10, 0))
@@ -189,7 +192,9 @@ class App:
         self.scene.pack(anchor="w", padx=8, pady=(8, 0))
         self.scene.bind("<Button-1>", self.scene_down)
         self.scene.bind("<B1-Motion>", self.scene_drag)
-        self.scene.bind("<ButtonRelease-1>", lambda _e: setattr(self, "drag", None))
+        self.scene.bind("<ButtonRelease-1>", self.scene_up)
+        self.scene.bind("<Shift-Button-1>", self.scene_pan_down)
+        self.scene.bind("<Shift-B1-Motion>", self.scene_pan_drag)
         self.scene.bind("<Double-Button-1>", self.scene_open_person)
         self.scene.bind("<MouseWheel>", self.scene_wheel)
         self.scene.bind("<Button-4>", self.scene_wheel)
@@ -213,9 +218,13 @@ class App:
         self.play_btn = ttk.Button(group_tools, text="Play", command=self.play_episode)
         self.play_btn.pack(side="left", padx=8)
         ttk.Button(group_tools, text="Stop", command=self.stop_play).pack(side="left")
-        ttk.Button(group_tools, text="Camera in", command=lambda: self.zoom_by(1.25)).pack(side="left", padx=(12, 0))
+        self.pan_btn = ttk.Button(group_tools, text="Pan camera", command=self.toggle_pan)
+        self.pan_btn.pack(side="left", padx=(12, 0))
+        ttk.Button(group_tools, text="Camera in", command=lambda: self.zoom_by(1.25)).pack(side="left", padx=4)
         ttk.Button(group_tools, text="Camera out", command=lambda: self.zoom_by(0.8)).pack(side="left", padx=4)
         ttk.Button(group_tools, text="Full scene", command=self.zoom_fit).pack(side="left")
+        self.crop_btn = ttk.Button(group_tools, text="Crop", command=self.toggle_crop)
+        self.crop_btn.pack(side="left", padx=(8, 0))
         self.parts_box = tk.Frame(episode, bg=BG)
         self.parts_box.pack(anchor="w", fill="x", padx=8)
         self.log = scrolledtext.ScrolledText(episode, height=4, width=70, bg=FIELD, fg=INK, insertbackground=INK, selectbackground="#5c5346", highlightbackground=BG)
@@ -598,6 +607,7 @@ class App:
             "mouthX": mouth_x,
             "mouthY": mouth_y,
             "mouthScale": mouth_s,
+            "on": tk.BooleanVar(value=True),
         })
         self.refresh_parts()
 
@@ -673,7 +683,23 @@ class App:
             factor = 1.18
         self._zoom_at(event.x, event.y, self.zoom * factor)
 
+    def toggle_pan(self):
+        self.camera_pan = not getattr(self, "camera_pan", False)
+        self.pan_btn.config(text="Pan camera: on" if self.camera_pan else "Pan camera")
+
+    def scene_up(self, _event):
+        if getattr(self, "_cropping_drag", False):
+            self._cropping_drag = False
+            self._apply_crop()
+            self.draw_scene()
+            return
+        self.drag = None
+        if getattr(self, "_panning", False):
+            self._panning = False
+            self.remember_camera()
+
     def scene_pan_down(self, event):
+        self._panning = True
         self._pan_drag = (event.x, event.y, self.pan_x, self.pan_y)
 
     def scene_pan_drag(self, event):
@@ -690,7 +716,8 @@ class App:
 
         if not hasattr(self, "scene"):
             return
-        self.apply_camera()
+        if not getattr(self, "_panning", False):
+            self.apply_camera()
         width, height = self.scene_w, self.scene_h
         self.scene.delete("all")
         self.scene.create_rectangle(0, 0, width, height, fill="#1c2420", outline="")
@@ -711,11 +738,14 @@ class App:
         self._scene_photos.append(bg_photo)
         self.scene.create_image(bx, by, image=bg_photo, anchor="nw")
         self.bg["_box"] = (bx, by, bw, bh)
-        self.scene.create_rectangle(bx, by, bx + bw, by + bh, outline="#8d9a86")
-        self.scene.create_rectangle(bx + bw - 22, by + bh - 22, bx + bw, by + bh, fill="#8d9a86", outline="")
+        self._outline((bx, by, bw, bh), "#8d9a86", self.selection == ("bg",))
         playing = self._play_started is not None
         now = (time.time() - self._play_started + self._play_offset) if playing else self.playhead
         for index, slot in enumerate(self.parts):
+            if not slot["on"].get():
+                slot["_box"] = None
+                slot["_mouth_box"] = None
+                continue
             path = slot.get("person") or ""
             if not path or not Path(path).exists():
                 slot["_box"] = None
@@ -726,9 +756,7 @@ class App:
             pw = max(24, int(ph * portrait.width / max(1, portrait.height)))
             portrait = portrait.resize((pw, ph), Image.LANCZOS)
             mouths = slot.get("mouths") or {}
-            shape = "closed"
-            if playing:
-                shape = mouth_at(self._play_cues.get(slot["name"].get().strip()) or [], now)
+            shape = mouth_at(self._play_cues.get(slot["name"].get().strip()) or [], now)
             mouth_path = mouths.get(shape) or mouths.get("closed") or ""
             ox = oy = mw = mh = 0
             if mouth_path and Path(mouth_path).exists():
@@ -760,10 +788,9 @@ class App:
             else:
                 mouth_box = None
             slot["_mouth_box"] = mouth_box
-            self.scene.create_rectangle(px + sw - 22, py + sh - 22, px + sw, py + sh, fill="#c45c26", outline="")
+            self._outline((px, py, sw, sh), "#c45c26", self.selection == ("person", index))
             if mouth_box:
-                mx, my, mw, mh = mouth_box
-                self.scene.create_rectangle(mx + mw - 16, my + mh - 16, mx + mw, my + mh, fill="#f6f1e7", outline="")
+                self._outline(mouth_box, "#f6f1e7", self.selection == ("mouth", index))
         fg_path = self.fg.get("path") or ""
         self.fg["_box"] = None
         if fg_path and Path(fg_path).exists():
@@ -781,8 +808,21 @@ class App:
             self._scene_photos.append(photo)
             self.scene.create_image(fx, fy, image=photo, anchor="nw")
             self.fg["_box"] = (fx, fy, fw, fh)
-            self.scene.create_rectangle(fx + fw - 22, fy + fh - 22, fx + fw, fy + fh, fill="#d4b483", outline="")
+            self._outline((fx, fy, fw, fh), "#d4b483", self.selection == ("fg",))
+        if self._crop_rect and not self._play_started:
+            x0, y0, x1, y1 = self._crop_rect
+            self.scene.create_rectangle(x0, y0, x1, y1, outline="#f6f1e7", dash=(4, 3), width=2)
         self.draw_track()
+
+    def _outline(self, box, color, selected):
+        if self._play_started:
+            return
+        x, y, w, h = box
+        self.scene.create_rectangle(x, y, x + w, y + h, outline=color, width=3 if selected else 1)
+        handle = 8 if selected else 6
+        self.scene.create_rectangle(x + w - handle, y + h - handle, x + w, y + h, fill=color, outline="")
+        if selected:
+            self.scene.create_text(x + 4, y + 2, text="selected", anchor="nw", fill=color, font=("Helvetica", 11, "bold"))
 
     def _clock(self, seconds):
         seconds = max(0, int(seconds))
@@ -879,12 +919,109 @@ class App:
                 return "bg-move", -2
         return None
 
+    def toggle_crop(self):
+        if not self.selection:
+            messagebox.showinfo("Select a picture", "Click a picture first. Its outline shows what will be cropped.")
+            return
+        self.cropping = not self.cropping
+        self._crop_rect = None
+        self.crop_btn.config(text="Crop: drag" if self.cropping else "Crop")
+        self.draw_scene()
+
+    def _selection_box(self):
+        kind = (self.selection or (None,))[0]
+        if kind == "bg":
+            return self.bg.get("_box")
+        if kind == "fg":
+            return self.fg.get("_box")
+        if kind in ("person", "mouth") and len(self.selection) > 1:
+            slot = self.parts[self.selection[1]]
+            return slot.get("_mouth_box") if kind == "mouth" else slot.get("_box")
+        return None
+
+    def _apply_crop(self):
+        from PIL import Image
+
+        if not self._crop_rect or not self.selection:
+            return
+        box = self._selection_box()
+        if not box:
+            return
+        bx, by, bw, bh = box
+        x0, y0, x1, y1 = self._crop_rect
+        left, right = sorted((max(bx, min(bx + bw, x0)), max(bx, min(bx + bw, x1))))
+        top, bottom = sorted((max(by, min(by + bh, y0)), max(by, min(by + bh, y1))))
+        if right - left < 8 or bottom - top < 8:
+            return
+        kind = self.selection[0]
+        if kind == "bg":
+            image = self._bg_source
+        elif kind == "fg":
+            image = Image.open(self.fg["path"]).convert("RGBA")
+        else:
+            slot = self.parts[self.selection[1]]
+            path = slot.get("mouths", {}).get("closed") if kind == "mouth" else slot.get("person")
+            if kind == "mouth":
+                shape = mouth_at(self._play_cues.get(slot["name"].get().strip()) or [], self.playhead)
+                path = (slot.get("mouths") or {}).get(shape) or path
+            if not path or not Path(path).exists():
+                return
+            image = Image.open(path).convert("RGBA")
+        ix0 = int((left - bx) / max(1, bw) * image.width)
+        iy0 = int((top - by) / max(1, bh) * image.height)
+        ix1 = int((right - bx) / max(1, bw) * image.width)
+        iy1 = int((bottom - by) / max(1, bh) * image.height)
+        if ix1 - ix0 < 2 or iy1 - iy0 < 2:
+            return
+        cropped = image.crop((ix0, iy0, ix1, iy1))
+        dest = SUPPORT / "crops"
+        dest.mkdir(parents=True, exist_ok=True)
+        file = dest / f"{uuid.uuid4().hex}.png"
+        cropped.save(file)
+        saved = str(file)
+        if kind == "bg":
+            self.bg_image = saved
+            self._bg_key = None
+        elif kind == "fg":
+            self.fg["path"] = saved
+        elif kind == "mouth":
+            slot = self.parts[self.selection[1]]
+            mouths = slot.setdefault("mouths", {})
+            shape = mouth_at(self._play_cues.get(slot["name"].get().strip()) or [], self.playhead)
+            key = shape if shape in mouths else next(iter(mouths), shape)
+            mouths[key] = saved
+        else:
+            self.parts[self.selection[1]]["person"] = saved
+        self.cropping = False
+        self._crop_rect = None
+        self.crop_btn.config(text="Crop")
+
     def scene_down(self, event):
+        if getattr(self, "camera_pan", False) or (event.state & 0x0001):
+            self.scene_pan_down(event)
+            return
+        if self.cropping and self.selection:
+            box = self._selection_box()
+            if box and box[0] <= event.x <= box[0] + box[2] and box[1] <= event.y <= box[1] + box[3]:
+                self._crop_rect = (event.x, event.y, event.x, event.y)
+                self._cropping_drag = True
+                return
+        self._cropping_drag = False
         hit = self._scene_hit(event)
         if not hit:
             self.drag = None
+            self.selection = None
+            self.draw_scene()
             return
         kind, index = hit
+        if kind in ("mouth", "mouth-size"):
+            self.selection = ("mouth", index)
+        elif index == -1:
+            self.selection = ("fg",)
+        elif index == -2:
+            self.selection = ("bg",)
+        else:
+            self.selection = ("person", index)
         if index < 0:
             layer = self.fg if index == -1 else self.bg
             self.drag = (
@@ -912,6 +1049,14 @@ class App:
         self.draw_scene()
 
     def scene_drag(self, event):
+        if getattr(self, "_cropping_drag", False) and self._crop_rect:
+            x0, y0 = self._crop_rect[0], self._crop_rect[1]
+            self._crop_rect = (x0, y0, event.x, event.y)
+            self.draw_scene()
+            return
+        if getattr(self, "_panning", False):
+            self.scene_pan_drag(event)
+            return
         if not self.drag:
             return
         kind, index, x0, y0, sx, sy, sh, mx, my, ms, box = self.drag
@@ -943,7 +1088,7 @@ class App:
     def play_episode(self):
         ready = []
         for slot in self.parts:
-            if slot.get("audio") and slot.get("person"):
+            if slot.get("audio") and slot.get("person") and slot["on"].get():
                 ready.append({
                     "name": slot["name"].get().strip() or "Person",
                     "audio": slot["audio"],
@@ -970,17 +1115,37 @@ class App:
                 raw = _pcm(Path(person["audio"]))
                 raws.append(raw)
                 duration = max(duration, (len(raw) / 2) / 16000)
-                try:
-                    cues[person["name"]] = build_cues(person["audio"], {"language": "en", "segments": []})
-                except Exception as exc:
-                    cues[person["name"]] = []
-                    self.root.after(0, lambda e=exc, name=person["name"]: self.write(f"{name} will use a simple mouth. {e}\n"))
+                cues[person["name"]] = self._talking_cues(raw)
             mix = out / "scene-mix.wav"
             _mix_wav(raws, mix)
             self.root.after(0, lambda: self._start_play(str(mix), cues, duration))
         except Exception as exc:
             self.root.after(0, lambda e=exc: self._fail(e))
             self.root.after(0, lambda: self.play_btn.config(state="normal"))
+
+    def _talking_cues(self, raw):
+        from podcast_processor import _speech_spans
+
+        shapes = ("small", "medium", "wide", "round", "teeth", "medium", "small", "wide")
+        cues = []
+        for start, end in _speech_spans(raw):
+            moment = start
+            index = 0
+            while moment < end:
+                nxt = min(end, moment + 0.1)
+                cues.append({"start": moment, "end": nxt, "mouth": shapes[index % len(shapes)]})
+                moment = nxt
+                index += 1
+        if not cues and raw:
+            end = max(0.2, (len(raw) / 2) / 16000)
+            moment = 0.0
+            index = 0
+            while moment < end:
+                nxt = min(end, moment + 0.1)
+                cues.append({"start": moment, "end": nxt, "mouth": shapes[index % len(shapes)]})
+                moment = nxt
+                index += 1
+        return cues
 
     def stop_play(self):
         self._play_token += 1
@@ -1054,6 +1219,7 @@ class App:
         for index, slot in enumerate(self.parts):
             row = tk.Frame(self.parts_box, bg=BG)
             row.pack(fill="x", pady=2)
+            ttk.Checkbutton(row, text="On", variable=slot["on"], command=self.draw_scene).pack(side="left", padx=(0, 4))
             ttk.Button(row, text=slot["name"].get() or "Person", command=lambda i=index: self.open_person(i)).pack(side="left")
             bits = []
             if slot.get("audio"):
