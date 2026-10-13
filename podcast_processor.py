@@ -91,6 +91,18 @@ def _clear_stale_locks():
             pass
 
 
+def align_model_dir():
+    candidates = []
+    bundled = getattr(sys, "_MEIPASS", None)
+    if bundled:
+        candidates.append(Path(bundled) / "align-model")
+    candidates.append(Path(__file__).resolve().parent / "vendor" / "align-model")
+    for path in candidates:
+        if (path / "config.json").is_file():
+            return path
+    return None
+
+
 def speech_model_dir():
     candidates = []
     bundled = getattr(sys, "_MEIPASS", None)
@@ -199,7 +211,13 @@ def process_audio(
         tick(0.46 + 0.2 * (float(pct) / 100), "Lining up each word")
 
     tick(0.46, "Lining up each word")
-    align_model, metadata = whisperx.load_align_model(language_code=detected, device="cpu")
+    align_kwargs = {}
+    bundled_align = align_model_dir()
+    if bundled_align is not None:
+        align_kwargs["model_name"] = str(bundled_align)
+        if _accepts(whisperx.load_align_model, "model_cache_only"):
+            align_kwargs["model_cache_only"] = True
+    align_model, metadata = whisperx.load_align_model(language_code=detected, device="cpu", **align_kwargs)
     align_kwargs = {}
     if _accepts(whisperx.align, "progress_callback"):
         align_kwargs["progress_callback"] = lined
@@ -255,3 +273,125 @@ def speakers_in(result):
         if name and name not in found:
             found.append(name)
     return found
+
+
+def _pcm(path: Path):
+    import imageio_ffmpeg
+
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    proc = subprocess.run(
+        [ffmpeg, "-v", "error", "-i", str(path), "-ac", "1", "-ar", "16000", "-f", "s16le", "-"],
+        capture_output=True,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        tail = (proc.stderr or b"").decode("utf-8", "ignore")[-400:]
+        raise RuntimeError(f"Could not read {path.name}. {tail}")
+    return proc.stdout
+
+
+def _speech_spans(raw: bytes):
+    import array
+
+    samples = array.array("h")
+    samples.frombytes(raw)
+    frame = 480
+    if len(samples) < frame:
+        return []
+    loud = []
+    for start in range(0, len(samples) - frame, frame):
+        acc = 0
+        for sample in samples[start : start + frame]:
+            acc += sample * sample
+        loud.append((acc / frame) ** 0.5)
+    ordered = sorted(loud)
+    noise = ordered[max(0, int(len(ordered) * 0.6) - 1)] or 1
+    gate = max(80, noise * 3.5)
+    spans = []
+    open_at = None
+    for index, level in enumerate(loud):
+        if level >= gate and open_at is None:
+            open_at = index
+        elif level < gate and open_at is not None:
+            spans.append((open_at, index))
+            open_at = None
+    if open_at is not None:
+        spans.append((open_at, len(loud)))
+    merged = []
+    for start, end in spans:
+        start_s = start * frame / 16000
+        end_s = end * frame / 16000
+        if end_s - start_s < 0.25:
+            continue
+        if merged and start_s - merged[-1][1] < 0.35:
+            merged[-1] = (merged[-1][0], end_s)
+        else:
+            merged.append((start_s, end_s))
+    return merged
+
+
+def _mix_wav(chunks, dest: Path):
+    import array
+    import wave
+
+    count = max(len(chunk) // 2 for chunk in chunks)
+    mix = array.array("h", [0]) * count
+    for chunk in chunks:
+        track = array.array("h")
+        track.frombytes(chunk)
+        for index, sample in enumerate(track):
+            total = mix[index] + sample
+            if total > 32767:
+                total = 32767
+            elif total < -32768:
+                total = -32768
+            mix[index] = total
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(dest), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        handle.writeframes(mix.tobytes())
+
+
+def process_tracks(paths, output_dir, progress=None):
+    def tick(amount, label):
+        if progress:
+            progress(amount, label)
+
+    files = [Path(path).expanduser().resolve() for path in paths]
+    if not files:
+        raise RuntimeError("Choose one audio file for each person.")
+    missing = [path.name for path in files if not path.exists()]
+    if missing:
+        raise FileNotFoundError("Missing audio: " + ", ".join(missing))
+    output_dir = Path(output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    segments = []
+    raw_tracks = []
+    per_speaker = {}
+    total = len(files)
+    for index, path in enumerate(files):
+        speaker = path.stem
+        tick(0.05 + 0.7 * index / total, f"Reading {speaker}")
+        raw = _pcm(path)
+        raw_tracks.append(raw)
+        per_speaker[speaker] = str(path)
+        for start, end in _speech_spans(raw):
+            segments.append({"start": start, "end": end, "speaker": speaker, "text": ""})
+    if not segments:
+        raise RuntimeError("No speech found in those files.")
+    segments.sort(key=lambda item: item["start"])
+    tick(0.85, "Mixing the tracks")
+    mixed = output_dir / "separate-tracks-mix.wav"
+    _mix_wav(raw_tracks, mixed)
+    result = {
+        "segments": segments,
+        "language": "en",
+        "per_speaker_audio": per_speaker,
+        "mixed_audio": str(mixed),
+    }
+    (output_dir / "separate-tracks.json").write_text(
+        json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    tick(1, "Tracks ready")
+    return result

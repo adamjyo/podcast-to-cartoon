@@ -56,6 +56,20 @@ jobs:
           PY
           test -f vendor/backgrounds/coffee-shop.jpg
           test -f vendor/backgrounds/library.jpg
+          python - << 'PY'
+          import base64
+          from pathlib import Path
+          raw = base64.b64decode(Path("vendor/included.b64").read_text().strip())
+          Path("vendor/included.zip").write_bytes(raw)
+          PY
+          rm -rf vendor/included
+          unzip -q vendor/included.zip -d vendor/included
+          test -f vendor/included/included-adam/avatar.png
+          python - << 'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download("facebook/wav2vec2-base-960h", local_dir="vendor/align-model")
+          PY
+          test -f vendor/align-model/config.json
 
       - name: Build app
         run: |
@@ -67,6 +81,8 @@ jobs:
             --collect-all faster_whisper \
             --add-data "vendor/speech-model:speech-model" \
             --add-data "vendor/backgrounds:backgrounds" \
+            --add-data "vendor/included:included" \
+            --add-data "vendor/align-model:align-model" \
             --add-binary "vendor/rhubarb/rhubarb:." \
             --add-data "vendor/rhubarb/res:res" \
             --hidden-import podcast_processor \

@@ -19,7 +19,7 @@ os.environ["SSL_CERT_FILE"] = certifi.where()
 os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 os.environ["CURL_CA_BUNDLE"] = certifi.where()
 
-from cast_library import SUPPORT, forget_cast, keep_cast, list_cast, load_cast, update_puppet
+from cast_library import SUPPORT, forget_cast, install_included, keep_cast, list_cast, load_cast, update_puppet
 from draw_avatar import draw_avatar, draw_background, draw_mouths
 from podcast_processor import process_audio, process_tracks, speakers_in
 from podcast_video import PALETTE, preview_puppet, render_cartoon
@@ -28,6 +28,7 @@ from opentoonz_export import export_opentoonz, export_parts, launch_opentoonz
 from stage import PRESETS, bundled_background, forget_set, keep_set, list_sets, load_set, paint_stage
 
 SUPPORT.mkdir(parents=True, exist_ok=True)
+install_included()
 os.environ.setdefault("HF_HOME", str(SUPPORT / "hf"))
 os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(SUPPORT / "hf" / "hub"))
 os.environ.setdefault("XDG_CACHE_HOME", str(SUPPORT / "cache"))

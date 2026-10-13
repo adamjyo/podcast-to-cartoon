@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import sys
 from pathlib import Path
 
 SUPPORT = Path.home() / "Library" / "Application Support" / "PodcastProcessor"
@@ -12,6 +14,28 @@ MOUTH_NAMES = ("closed", "small", "medium", "wide", "round", "teeth")
 
 def _meta_path(folder: Path) -> Path:
     return folder / "meta.json"
+
+
+def install_included():
+    roots = []
+    bundled = getattr(sys, "_MEIPASS", None)
+    if bundled:
+        roots.append(Path(bundled) / "included")
+    roots.append(Path(__file__).resolve().parent / "vendor" / "included")
+    source = next((path for path in roots if path.is_dir()), None)
+    if source is None:
+        return 0
+    CAST.mkdir(parents=True, exist_ok=True)
+    added = 0
+    for folder in source.iterdir():
+        if not folder.is_dir() or not (folder / "meta.json").exists():
+            continue
+        dest = CAST / folder.name
+        if dest.exists():
+            continue
+        shutil.copytree(folder, dest)
+        added += 1
+    return added
 
 
 def list_cast():
@@ -25,7 +49,7 @@ def list_cast():
         data = json.loads(meta.read_text())
         data["id"] = folder.name
         data["folder"] = str(folder)
-        data["has_avatar"] = (folder / "avatar.jpg").exists()
+        data["has_avatar"] = (folder / "avatar.jpg").exists() or (folder / "avatar.png").exists()
         items.append(data)
     items.sort(key=lambda item: item.get("savedAt", 0), reverse=True)
     return items
@@ -40,7 +64,9 @@ def load_cast(avatar_id: str):
     data["id"] = avatar_id
     data["folder"] = str(folder)
     data["photo"] = str(folder / "photo.jpg")
-    avatar = folder / "avatar.jpg"
+    avatar = folder / "avatar.png"
+    if not avatar.exists():
+        avatar = folder / "avatar.jpg"
     data["avatar"] = str(avatar) if avatar.exists() else None
     mouths = {}
     mouth_dir = folder / "mouths"
