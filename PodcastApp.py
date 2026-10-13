@@ -152,6 +152,10 @@ class App:
         self.status = tk.Label(root, text="Ready", bg=BG, fg=INK, anchor="w", font=("Helvetica", 14))
         self.status.pack(side="bottom", fill="x", padx=16, pady=(8, 0))
         self._job_started = None
+        self._job_label = "Ready"
+        self._job_fraction = 0
+        self._pulse_on = False
+        self._same_since = None
 
         body = tk.Frame(root, bg=BG)
         body.pack(fill="both", expand=True, padx=12, pady=6)
@@ -242,30 +246,64 @@ class App:
 
     def show_busy(self, label):
         self._job_started = time.time()
-        self.status.config(text=label)
-        self.percent.config(text="…")
-        self.bar.stop()
-        self.bar.config(mode="indeterminate", maximum=100)
-        self.bar.start(12)
+        self._job_label = label
+        self._job_fraction = None
+        self._same_since = time.time()
+        self._ensure_pulse()
+        self._paint_progress()
 
     def show_progress(self, fraction, label):
         if self._job_started is None:
             self._job_started = time.time()
-        elapsed = max(0, time.time() - self._job_started)
-        pct = max(0, min(100, float(fraction) * 100))
-        if pct >= 4:
+        if label != self._job_label or abs((fraction or 0) - (self._job_fraction or 0)) > 0.005:
+            self._same_since = time.time()
+        self._job_label = label
+        self._job_fraction = fraction
+        self._ensure_pulse()
+        self._paint_progress()
+
+    def _ensure_pulse(self):
+        if self._pulse_on:
+            return
+        self._pulse_on = True
+        self.root.after(1000, self._pulse)
+
+    def _pulse(self):
+        if self._job_started is None:
+            self._pulse_on = False
+            return
+        self._paint_progress()
+        self.root.after(1000, self._pulse)
+
+    def _paint_progress(self):
+        elapsed = max(0, time.time() - (self._job_started or time.time()))
+        stalled = self._same_since is not None and time.time() - self._same_since > 20
+        if self._job_fraction is None:
+            if self.bar.cget("mode") != "indeterminate":
+                self.bar.stop()
+                self.bar.config(mode="indeterminate", maximum=100)
+                self.bar.start(12)
+            self.percent.config(text="…")
+            note = "Still working." if stalled else ""
+            self.status.config(text=f"{self._job_label}   {_clock(elapsed)} gone {note}".strip())
+            return
+        pct = max(0, min(100, float(self._job_fraction) * 100))
+        if pct >= 8:
             remain = elapsed * (100 - pct) / pct
             timing = f"{_clock(elapsed)} gone, about {_clock(remain)} left"
         else:
             timing = f"{_clock(elapsed)} gone"
+        if stalled and pct < 15:
+            timing += ". Still downloading the speech model"
         self.bar.stop()
         self.bar.config(mode="determinate", maximum=100)
         self.bar["value"] = pct
         self.percent.config(text=f"{pct:.0f}%")
-        self.status.config(text=f"{label}   {timing}")
+        self.status.config(text=f"{self._job_label}   {timing}")
 
     def show_done(self, label):
         self._job_started = None
+        self._pulse_on = False
         self.bar.stop()
         self.bar.config(mode="determinate", maximum=100)
         self.bar["value"] = 100
@@ -815,6 +853,8 @@ class App:
         messagebox.showinfo("Video ready", f"Saved to\n{dest}")
 
     def _fail(self, exc):
+        self._job_started = None
+        self._pulse_on = False
         self.go.config(state="normal")
         self.video_btn.config(state="normal")
         self.toonz_btn.config(state="normal" if self.result else "disabled")
