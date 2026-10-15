@@ -130,6 +130,9 @@ class App:
         self._play_offset = 0.0
         self._play_duration = 60.0
         self.view_start = 0.0
+        self.cuts = [{"t": 0.0, "shot": "wide"}]
+        self.program = "wide"
+        self.follow_switch = True
         self.view_span = 60.0
         self.camera_keys = [{"t": 0.0, "zoom": 1.0, "pan_x": 0.0, "pan_y": 0.0}]
         self.selection = None
@@ -190,6 +193,21 @@ class App:
         ).pack(anchor="w", padx=8, pady=(10, 0))
         self.scene = tk.Canvas(episode, width=self.scene_w, height=self.scene_h, bg="#1c2420", highlightthickness=0)
         self.scene.pack(anchor="w", padx=8, pady=(8, 0))
+        switch = tk.Frame(episode, bg=BG)
+        switch.pack(anchor="w", fill="x", padx=8, pady=(6, 0))
+        self.on_air = tk.Label(
+            switch, text="ON AIR   Wide", bg="#c45c26", fg="#fffaf3",
+            font=("Helvetica", 13, "bold"), padx=12, pady=6,
+        )
+        self.on_air.pack(side="left")
+        self.switch_box = tk.Frame(switch, bg=BG)
+        self.switch_box.pack(side="left", padx=8)
+        ttk.Button(switch, text="Export switched MP4", command=self.export_switched).pack(side="right")
+        tk.Label(
+            episode,
+            text="Wide is the whole table. Each name is a close-up. Click one while it plays to cut, like a live show. Export writes that cut list into an MP4.",
+            bg=BG, fg=INK,
+        ).pack(anchor="w", padx=8, pady=(4, 0))
         self.scene.bind("<Button-1>", self.scene_down)
         self.scene.bind("<B1-Motion>", self.scene_drag)
         self.scene.bind("<ButtonRelease-1>", self.scene_up)
@@ -628,9 +646,11 @@ class App:
         )
 
     def zoom_by(self, factor):
+        self.follow_switch = False
         self._zoom_at(self.scene_w / 2, self.scene_h / 2, self.zoom * factor)
 
     def zoom_fit(self):
+        self.follow_switch = False
         self.zoom = 1.0
         self.pan_x = 0.0
         self.pan_y = 0.0
@@ -691,6 +711,7 @@ class App:
         self._zoom_at(event.x, event.y, self.zoom * factor)
 
     def toggle_pan(self):
+        self.follow_switch = False
         self.camera_pan = not getattr(self, "camera_pan", False)
         self.pan_btn.config(text="Pan camera: on" if self.camera_pan else "Pan camera")
 
@@ -726,8 +747,13 @@ class App:
 
         if not hasattr(self, "scene"):
             return
+        playing = self._play_started is not None
+        now = (time.time() - self._play_started + self._play_offset) if playing else self.playhead
         if not getattr(self, "_panning", False):
-            self.apply_camera()
+            if getattr(self, "follow_switch", False):
+                self._apply_program(now)
+            else:
+                self.apply_camera()
         width, height = self.scene_w, self.scene_h
         self.scene.delete("all")
         self.scene.create_rectangle(0, 0, width, height, fill="#1c2420", outline="")
@@ -749,8 +775,6 @@ class App:
         self.scene.create_image(bx, by, image=bg_photo, anchor="nw")
         self.bg["_box"] = (bx, by, bw, bh)
         self._outline((bx, by, bw, bh), "#8d9a86", self.selection == ("bg",))
-        playing = self._play_started is not None
-        now = (time.time() - self._play_started + self._play_offset) if playing else self.playhead
         for index, slot in enumerate(self.parts):
             if not slot["on"].get():
                 slot["_box"] = None
@@ -1300,6 +1324,108 @@ class App:
             tk.Label(row, text=", ".join(bits) if bits else "not set up", bg=BG, fg=INK).pack(side="left", padx=8)
         if hasattr(self, "scene"):
             self.draw_scene()
+        self.refresh_switch_buttons()
+
+    def refresh_switch_buttons(self):
+        if not hasattr(self, "switch_box"):
+            return
+        for child in self.switch_box.winfo_children():
+            child.destroy()
+        ttk.Button(self.switch_box, text="Wide", command=lambda: self.cut_to("wide")).pack(side="left", padx=2)
+        for slot in self.parts:
+            if not slot["on"].get():
+                continue
+            name = slot["name"].get().strip() or "Person"
+            ttk.Button(self.switch_box, text=name, command=lambda n=name: self.cut_to(n)).pack(side="left", padx=2)
+
+    def cut_to(self, shot):
+        if self._play_started is not None:
+            t = time.time() - self._play_started + self._play_offset
+            self.playhead = t
+        else:
+            t = float(self.playhead)
+        self.cuts = [cut for cut in self.cuts if abs(cut["t"] - t) > 0.08]
+        self.cuts.append({"t": max(0.0, t), "shot": shot})
+        self.cuts.sort(key=lambda cut: cut["t"])
+        self.program = shot
+        self.follow_switch = True
+        self._apply_program(t)
+        self.draw_scene()
+
+    def _apply_program(self, t):
+        from podcast_video import camera_for, shot_at
+
+        shot = shot_at(self.cuts, t)
+        self.program = shot
+        people = [self._broadcast_person(slot) for slot in self.parts if slot["on"].get() and slot.get("person")]
+        self.zoom, self.pan_x, self.pan_y = camera_for(shot, people, self.scene_w, self.scene_h)
+        if hasattr(self, "on_air"):
+            self.on_air.config(text=f"ON AIR   {shot if shot != 'wide' else 'Wide'}")
+
+    def _broadcast_person(self, slot):
+        return {
+            "name": slot["name"].get().strip() or "Person",
+            "image": slot.get("person") or "",
+            "mouths": dict(slot.get("mouths") or {}),
+            "x": float(slot.get("x") or 0),
+            "y": float(slot.get("y") or 0),
+            "h": float(slot.get("h") or 0.7),
+            "mouthX": float(slot.get("mouthX") or 50),
+            "mouthY": float(slot.get("mouthY") or 42),
+            "mouthScale": float(slot.get("mouthScale") or 18),
+            "audio": slot.get("audio") or "",
+        }
+
+    def export_switched(self):
+        people = [self._broadcast_person(slot) for slot in self.parts if slot["on"].get() and slot.get("person")]
+        if not people:
+            messagebox.showwarning("Nothing to export", "Turn on at least one person who has a picture.")
+            return
+        self.show_busy("Exporting the switched show")
+        cuts = [dict(cut) for cut in self.cuts]
+        cues = dict(getattr(self, "_play_cues", {}) or {})
+        bg = self.bg_image or (self.part_bg.get() or "coffee shop")
+        threading.Thread(target=self._export_switched, args=(people, cuts, cues, bg), daemon=True).start()
+
+    def _export_switched(self, people, cuts, cues, bg):
+        try:
+            from podcast_processor import _mix_wav, _pcm
+            from podcast_video import render_broadcast
+
+            raws = []
+            duration = 8.0
+            for person in people:
+                if not person.get("audio"):
+                    continue
+                if person["name"] not in cues:
+                    try:
+                        cues[person["name"]] = build_cues(person["audio"], {"language": "en", "segments": []})
+                    except Exception:
+                        raw = _pcm(Path(person["audio"]))
+                        cues[person["name"]] = self._talking_cues(raw)
+                raw = _pcm(Path(person["audio"]))
+                raws.append(raw)
+                duration = max(duration, (len(raw) / 2) / 16000)
+            out = Path.home() / "Desktop" / "Podcast Processor"
+            out.mkdir(parents=True, exist_ok=True)
+            audio = None
+            if raws:
+                audio = out / "switched-mix.wav"
+                _mix_wav(raws, audio)
+            dest = out / "switched-show.mp4"
+
+            def report(done, total):
+                self.root.after(0, lambda d=done, n=total: self.show_progress(d / max(1, n), f"Frame {d} of {n}"))
+
+            render_broadcast(people, cuts, cues, dest, background=bg, audio_path=str(audio) if audio else None, duration=duration, progress=report)
+            self.root.after(0, lambda: self._switched_done(dest))
+        except Exception as exc:
+            self.root.after(0, lambda e=exc: self._fail(e))
+
+    def _switched_done(self, dest):
+        self.show_done("Switched show exported")
+        self.write(f"Switched MP4 saved to {dest}\n")
+        messagebox.showinfo("Switched show", f"The MP4 is on your Desktop:\n{dest}")
 
     def open_person(self, index):
         if not (0 <= index < len(self.parts)):

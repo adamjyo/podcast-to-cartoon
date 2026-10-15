@@ -2,7 +2,7 @@
 
 Mac app for a mixed podcast: it separates the speakers, keeps a cast of drawn avatars, and writes a cartoon whose mouths follow the recording.
 
-The Episode tab is a 16:9 table. Drag a person, their mouth, or the room. Uncheck On to leave someone out of the video. Mouth placement and where they sit are saved on that avatar for the next episode.
+The Episode tab is a 16:9 table and a live switcher. Wide shows the whole table. Each name is a close-up. Click one while the episode plays to cut, then Export switched MP4 writes that show. Drag a person, their mouth, or the room. Uncheck On to leave someone out. Mouth placement and where they sit are saved on that avatar.
 
 ## Download
 

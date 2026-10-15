@@ -188,3 +188,124 @@ def render_cartoon(result, audio_path, out_path, names, cast_for_speaker=None, p
     if code != 0:
         raise RuntimeError(err[-1500:] or f"ffmpeg exited {code}")
     return out_path
+
+
+def shot_at(cuts, t):
+    shot = "wide"
+    for cut in cuts or []:
+        if float(cut.get("t") or 0) <= float(t) + 0.001:
+            shot = cut.get("shot") or "wide"
+        else:
+            break
+    return shot
+
+
+def camera_for(shot, people, width, height):
+    if shot == "wide":
+        return 1.0, 0.0, 0.0
+    person = next((item for item in people if item.get("name") == shot and item.get("image")), None)
+    image = (person or {}).get("image")
+    if not person or not image or not Path(image).exists():
+        return 1.0, 0.0, 0.0
+    with Image.open(image) as picture:
+        aspect = picture.width / max(1, picture.height)
+    ph = max(48, int(float(person.get("h") or 0.7) * height))
+    pw = max(24, int(ph * aspect))
+    px = float(person.get("x") or 0) * width
+    py = float(person.get("y") or 0) * height
+    zoom = min(3.4, max(1.15, height / (ph * 0.62)))
+    pan_x = (px + pw * 0.5) - (width / 2) / zoom
+    pan_y = (py + ph * 0.30) - (height / 2) / zoom
+    return zoom, pan_x, pan_y
+
+
+def _blit(canvas, picture, x, y, w, h, zoom, pan_x, pan_y):
+    sw = max(1, int(w * zoom))
+    sh = max(1, int(h * zoom))
+    sx = int((x - pan_x) * zoom)
+    sy = int((y - pan_y) * zoom)
+    resized = picture.resize((sw, sh), Image.LANCZOS)
+    canvas.paste(resized, (sx, sy), resized)
+
+
+def _broadcast_frame(people, background, t, cuts, cues, width, height):
+    zoom, pan_x, pan_y = camera_for(shot_at(cuts, t), people, width, height)
+    canvas = Image.new("RGBA", (width, height), (28, 36, 32, 255))
+    _blit(canvas, background, 0, 0, width, height, zoom, pan_x, pan_y)
+    for person in people:
+        image = person.get("image")
+        if not image or not Path(image).exists():
+            continue
+        body = Image.open(image).convert("RGBA")
+        ph = max(48, int(float(person.get("h") or 0.7) * height))
+        pw = max(24, int(ph * body.width / max(1, body.height)))
+        portrait = body.resize((pw, ph), Image.LANCZOS)
+        shape = mouth_at((cues or {}).get(person.get("name")) or [], t)
+        mouths = person.get("mouths") or {}
+        mouth_path = mouths.get(shape) or mouths.get("closed") or ""
+        if mouth_path and Path(mouth_path).exists():
+            mouth = Image.open(mouth_path).convert("RGBA")
+            mw = max(12, int(pw * float(person.get("mouthScale") or 18) / 100))
+            mh = max(8, int(mouth.height * mw / max(1, mouth.width)))
+            mouth = mouth.resize((mw, mh), Image.LANCZOS)
+            ox = int(pw * float(person.get("mouthX") or 50) / 100) - mw // 2
+            oy = int(ph * float(person.get("mouthY") or 42) / 100) - mh // 2
+            portrait.paste(mouth, (ox, oy), mouth)
+        _blit(
+            canvas,
+            portrait,
+            float(person.get("x") or 0) * width,
+            float(person.get("y") or 0) * height,
+            pw,
+            ph,
+            zoom,
+            pan_x,
+            pan_y,
+        )
+    draw = ImageDraw.Draw(canvas)
+    tx = int((0 - pan_x) * zoom)
+    ty = int((height * 0.68 - pan_y) * zoom)
+    tw = max(1, int(width * zoom))
+    th = max(1, int(height * 0.34 * zoom))
+    draw.rectangle((tx, ty, tx + tw, ty + max(8, int(th * 0.16))), fill="#c4a27a")
+    draw.rectangle((tx, ty + int(th * 0.12), tx + tw, ty + th + 8), fill="#6b4228")
+    return canvas.convert("RGB")
+
+
+def render_broadcast(people, cuts, cues, out_path, background=None, audio_path=None, duration=8, progress=None, fps=12):
+    import imageio_ffmpeg
+
+    width, height = W, H
+    if background and Path(str(background)).exists():
+        plate = paint_stage({"image": str(background)}, (width, height)).convert("RGBA")
+    else:
+        plate = paint_stage({"preset": background or "coffee shop"}, (width, height)).convert("RGBA")
+    duration = max(1.0, float(duration or 1))
+    nframes = max(1, int(duration * fps))
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    cmd = [
+        ffmpeg, "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
+        "-r", str(fps), "-i", "-",
+    ]
+    if audio_path and Path(audio_path).exists():
+        cmd += ["-i", str(audio_path), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"]
+    else:
+        cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
+    cmd.append(str(out_path))
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        for i in range(nframes):
+            frame = _broadcast_frame(people, plate, i / fps, cuts, cues, width, height)
+            proc.stdin.write(frame.tobytes())
+            if progress and (i % fps == 0 or i == nframes - 1):
+                progress(i + 1, nframes)
+    finally:
+        if proc.stdin:
+            proc.stdin.close()
+        err = proc.stderr.read().decode("utf-8", "replace") if proc.stderr else ""
+        code = proc.wait()
+    if code != 0:
+        raise RuntimeError(err[-1500:] or f"ffmpeg exited {code}")
+    return out_path
