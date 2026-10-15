@@ -1,12 +1,16 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { drawAvatar, drawMouths } from "@/lib/draw";
 import { forgetAvatar, keepAvatar, listAvatars, type SavedAvatar } from "@/lib/library";
+import { HOP_MS, openness, readSpeech, shapeOnTrack } from "@/lib/audio-mouths";
+import { BACKGROUNDS, defaultSpot, paintTable, SCENE_H, SCENE_W, stockCast, type BackgroundId, type HitBox, type ScenePerson, type Spot } from "@/lib/scene";
 import {
   JAW,
   MOUTH_NAMES,
   STOCK_MOUTHS,
+  shapeAt,
   speechLine,
+  speechTimeline,
   shrinkPhoto,
   splitMouthSheet,
   type MouthName,
@@ -28,6 +32,12 @@ type Seat = {
   mouthX: number;
   mouthY: number;
   mouthScale: number;
+  on?: boolean;
+  audioName?: string;
+  audioUrl?: string;
+  durationMs?: number;
+  mouthTrack?: MouthName[];
+  audioBusy?: boolean;
 };
 
 const MOUTH_SHAPES = ["closed", "small", "medium", "wide", "round", "teeth"] as const;
@@ -127,17 +137,65 @@ const CAST = [
   },
 ];
 
-function Studio() {
+export function Studio() {
   const [seats, setSeats] = useState<Seat[]>([]);
   const [active, setActive] = useState<string | null>(null);
   const [shape, setShape] = useState<MouthName>("closed");
-  const [talking, setTalking] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [playMs, setPlayMs] = useState(0);
+  const [clipUrl, setClipUrl] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportNote, setExportNote] = useState<string | null>(null);
   const [library, setLibrary] = useState<SavedAvatar[]>([]);
   const [libraryError, setLibraryError] = useState<string | null>(null);
+  const [background, setBackground] = useState<BackgroundId>("coffee");
+  const [spots, setSpots] = useState<Record<string, Spot>>({});
+  const [room, setRoom] = useState({ x: 50, y: 50, scale: 100 });
+  const [selected, setSelected] = useState<{ id: string; kind: HitBox["kind"] }>({
+    id: "background",
+    kind: "background",
+  });
+  const [castOn, setCastOn] = useState<Record<string, boolean>>({});
+  const [layoutReady, setLayoutReady] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const talkTimer = useRef(0);
+  const sceneRef = useRef<HTMLCanvasElement>(null);
+  const boxesRef = useRef<HitBox[]>([]);
+  const dragRef = useRef<{
+    id: string;
+    kind: HitBox["kind"];
+    mode: "move" | "resize";
+    x: number;
+    y: number;
+    origin: Spot | { x: number; y: number; scale: number };
+  } | null>(null);
+  const playMsRef = useRef(0);
+  const audioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
+  const line = useMemo(() => speechTimeline(2), []);
+  const duration = useMemo(() => {
+    const heard = seats.filter((item) => item.on !== false);
+    return heard.reduce((max, item) => Math.max(max, item.durationMs ?? 0), 0) || line.duration;
+  }, [seats, line.duration]);
+  const durationRef = useRef(duration);
+  durationRef.current = duration;
+  const usingAudio = seats.some((item) => item.on !== false && (item.mouthTrack?.length ?? 0) > 0);
+
+  function personOn(id: string) {
+    if (seats.length) return seats.find((item) => item.id === id)?.on !== false;
+    return castOn[id] !== false;
+  }
+
+  function shapeFor(item: Seat | undefined, ms: number): MouthName {
+    if (item?.mouthTrack?.length) return shapeOnTrack(item.mouthTrack, ms);
+    return shapeAt(ms);
+  }
+
+  function loudestAt(ms: number): Seat | undefined {
+    const voiced = seats.filter((item) => item.on !== false && item.mouthTrack?.length);
+    if (!voiced.length) return seat;
+    return voiced.reduce((best, item) =>
+      openness(shapeFor(item, ms)) > openness(shapeFor(best, ms)) ? item : best,
+    );
+  }
 
   const seat = seats.find((s) => s.id === active) ?? seats[0];
 
@@ -148,28 +206,95 @@ function Studio() {
   }, []);
 
   useEffect(() => {
-    if (!talking) return;
-    const beats = speechLine(2);
-    let i = 0;
-    let cancelled = false;
-    const step = () => {
-      if (cancelled) return;
-      const beat = beats[i];
-      if (!beat) {
+    try {
+      const raw = localStorage.getItem("paper-mic-layout");
+      if (raw) {
+        const parsed = JSON.parse(raw) as { spots?: Record<string, Spot>; room?: { x: number; y: number; scale: number } };
+        if (parsed.spots) setSpots(parsed.spots);
+        if (parsed.room) setRoom(parsed.room);
+      }
+    } catch {
+      // A bad saved layout should not block the scene.
+    }
+    setLayoutReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!layoutReady) return;
+    localStorage.setItem("paper-mic-layout", JSON.stringify({ spots, room }));
+  }, [spots, room, layoutReady]);
+
+  const applyPlayhead = (ms: number) => {
+    const who = loudestAt(ms);
+    if (who?.mouthTrack?.length) {
+      setShape(shapeFor(who, ms));
+      setActive((current) => (current === who.id ? current : who.id));
+      return;
+    }
+    setShape(ms >= durationRef.current ? "closed" : shapeAt(ms));
+  };
+  const applyRef = useRef(applyPlayhead);
+  applyRef.current = applyPlayhead;
+
+  useEffect(() => {
+    if (!playing) return;
+    let frame = 0;
+    let last = performance.now();
+    const step = (now: number) => {
+      const next = playMsRef.current + (now - last);
+      last = now;
+      if (next >= durationRef.current) {
+        playMsRef.current = durationRef.current;
+        setPlayMs(durationRef.current);
         setShape("closed");
-        setTalking(false);
+        setPlaying(false);
         return;
       }
-      setShape(beat.shape);
-      i += 1;
-      talkTimer.current = window.setTimeout(step, beat.ms);
+      playMsRef.current = next;
+      setPlayMs(next);
+      applyRef.current(next);
+      frame = window.requestAnimationFrame(step);
     };
-    step();
-    return () => {
-      cancelled = true;
-      window.clearTimeout(talkTimer.current);
-    };
-  }, [talking]);
+    frame = window.requestAnimationFrame(step);
+    return () => window.cancelAnimationFrame(frame);
+  }, [playing]);
+
+  useEffect(() => {
+    for (const item of seats) {
+      const el = audioRefs.current[item.id];
+      if (!el) continue;
+      if (playing && item.on !== false) {
+        if (Math.abs(el.currentTime * 1000 - playMsRef.current) > 200) {
+          el.currentTime = playMsRef.current / 1000;
+        }
+        void el.play().catch(() => undefined);
+      } else {
+        el.pause();
+      }
+    }
+  }, [playing, seats]);
+
+  function seek(ms: number) {
+    const next = Math.max(0, Math.min(durationRef.current, ms));
+    playMsRef.current = next;
+    setPlayMs(next);
+    for (const el of Object.values(audioRefs.current)) {
+      if (el && Math.abs(el.currentTime * 1000 - next) > 40) el.currentTime = next / 1000;
+    }
+    applyRef.current(next);
+  }
+
+  function togglePlay() {
+    if (playMsRef.current >= durationRef.current - 30) seek(0);
+    setPlaying((on) => !on);
+  }
+
+  function clock(ms: number) {
+    const total = Math.max(0, Math.round(ms / 100) / 10);
+    const mins = Math.floor(total / 60);
+    const secs = (total % 60).toFixed(1).padStart(4, "0");
+    return `${mins}:${secs}`;
+  }
 
   async function onFiles(list: FileList | null) {
     if (!list?.length) return;
@@ -195,6 +320,37 @@ function Studio() {
 
   function patch(id: string, partial: Partial<Seat>) {
     setSeats((prev) => prev.map((s) => (s.id === id ? { ...s, ...partial } : s)));
+  }
+
+  async function attachAudio(id: string, file: File | undefined) {
+    if (!file) return;
+    patch(id, { audioBusy: true, error: undefined });
+    try {
+      const speech = await readSpeech(file);
+      setSeats((prev) =>
+        prev.map((item) => {
+          if (item.id !== id) return item;
+          if (item.audioUrl) URL.revokeObjectURL(item.audioUrl);
+          return {
+            ...item,
+            audioBusy: false,
+            audioName: file.name,
+            audioUrl: speech.url,
+            durationMs: speech.durationMs,
+            mouthTrack: speech.track,
+            error: undefined,
+          };
+        }),
+      );
+      setActive(id);
+      seek(0);
+      setExportNote(`${file.name} sets the mouth. The bar covers ${clock(speech.durationMs)}.`);
+    } catch (err) {
+      patch(id, {
+        audioBusy: false,
+        error: err instanceof Error ? err.message : "Could not read that audio.",
+      });
+    }
   }
 
   async function develop(id: string) {
@@ -236,6 +392,7 @@ function Studio() {
     const current = seats.find((s) => s.id === id);
     if (!current?.avatar) return;
     const libraryId = current.libraryId ?? crypto.randomUUID();
+    const spot = spotFor(id);
     try {
       await keepAvatar({
         id: libraryId,
@@ -244,13 +401,25 @@ function Studio() {
         photo: current.photo,
         avatar: current.avatar,
         mouths: current.mouths,
-        mouthX: current.mouthX,
-        mouthY: current.mouthY,
-        mouthScale: current.mouthScale,
+        mouthX: spot.mouthX,
+        mouthY: spot.mouthY,
+        mouthScale: spot.mouthScale,
+        sceneX: spot.x,
+        sceneY: spot.y,
+        sceneScale: spot.scale,
         savedAt: Date.now(),
       });
-      patch(id, { libraryId, kept: true, error: undefined });
+      patch(id, {
+        libraryId,
+        kept: true,
+        mouthX: spot.mouthX,
+        mouthY: spot.mouthY,
+        mouthScale: spot.mouthScale,
+        error: undefined,
+      });
+      setSpots((prev) => ({ ...prev, [id]: spot }));
       setLibrary(await listAvatars());
+      setExportNote(`Mouth placement saved for ${current.name || "this person"}.`);
     } catch (err) {
       patch(id, {
         error: err instanceof Error ? err.message : "Could not save that avatar.",
@@ -265,6 +434,60 @@ function Studio() {
       img.onerror = () => reject(new Error("Could not load a picture for the video."));
       img.src = src;
     });
+  }
+
+  const imageCache = useRef(new Map<string, Promise<HTMLImageElement>>());
+  const paintGen = useRef(0);
+
+  function loadCached(src: string) {
+    let pending = imageCache.current.get(src);
+    if (!pending) {
+      pending = loadImage(src);
+      imageCache.current.set(src, pending);
+    }
+    return pending;
+  }
+
+  async function drawScene(canvas: HTMLCanvasElement, ms: number, sample: MouthName, gen?: number) {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const everyone: { person: ScenePerson; shape: MouthName }[] = seats.length
+      ? seats.map((item) => ({
+          person: {
+            id: item.id,
+            name: item.name,
+            body: item.avatar ?? item.photo,
+            mouths: item.mouths ?? {},
+            mouthX: item.mouthX,
+            mouthY: item.mouthY,
+            mouthScale: item.mouthScale,
+          },
+          shape: item.mouthTrack?.length ? shapeOnTrack(item.mouthTrack, ms) : usingAudio ? "closed" : sample,
+        }))
+      : stockCast().map((person) => ({
+          person,
+          shape: sample,
+        }));
+    const roster = everyone.filter((entry) => personOn(entry.person.id));
+    const bg = BACKGROUNDS.find((item) => item.id === background) ?? BACKGROUNDS[0];
+    const backgroundImg = await loadCached(bg.href);
+    const tableImg = await loadCached("/cast/layers/table.png");
+    const painted = [];
+    for (let index = 0; index < roster.length; index += 1) {
+      const entry = roster[index];
+      if (!entry) continue;
+      const fullIndex = Math.max(0, everyone.findIndex((item) => item.person.id === entry.person.id));
+      const spot = spots[entry.person.id] ?? defaultSpot(fullIndex, everyone.length, entry.person);
+      const mouthSrc = entry.person.mouths[entry.shape] ?? STOCK_MOUTHS[entry.shape];
+      painted.push({
+        ...entry,
+        spot,
+        body: await loadCached(entry.person.body),
+        mouth: await loadCached(mouthSrc),
+      });
+    }
+    if (gen !== undefined && gen !== paintGen.current) return;
+    boxesRef.current = paintTable(ctx, backgroundImg, tableImg, painted, room, selected);
   }
 
   function paintFrame(
@@ -292,40 +515,46 @@ function Studio() {
   }
 
   async function exportVideo() {
-    const face = seat?.avatar ?? seat?.photo ?? "/cast/lineup/adam.png";
-    const mouths = seat?.mouths ?? {
-      closed: "/cast/mouth-parts/adam/closed.png",
-      small: "/cast/mouth-parts/adam/small.png",
-      medium: "/cast/mouth-parts/adam/medium.png",
-      wide: "/cast/mouth-parts/adam/wide.png",
-      round: "/cast/mouth-parts/adam/round.png",
-      teeth: "/cast/mouth-parts/adam/teeth.png",
-    };
-    const place = seat
-      ? { mouthX: seat.mouthX, mouthY: seat.mouthY, mouthScale: seat.mouthScale }
-      : { mouthX: 50, mouthY: 43, mouthScale: 16 };
-    const mime = ["video/webm;codecs=vp9", "video/webm", "video/mp4"].find((type) =>
-      typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(type),
-    );
-    if (!mime) {
+    const voiced = seats.filter((item) => item.on !== false && item.mouthTrack?.length && item.audioUrl && item.durationMs);
+    const mimeType = (
+      voiced.length
+        ? ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm", "video/mp4"]
+        : ["video/webm;codecs=vp9", "video/webm", "video/mp4"]
+    ).find((type) => typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(type));
+    if (!mimeType) {
       setExportNote("This browser cannot record a video.");
       return;
     }
     setExporting(true);
-    setExportNote("Drawing the line…");
-    setTalking(false);
+    setPlaying(false);
+    setExportNote(voiced.length ? "Recording the audio…" : "Drawing the line…");
+    let audioCtx: AudioContext | null = null;
     try {
-      const avatar = await loadImage(face);
-      const mouthImgs = {} as Record<MouthName, HTMLImageElement>;
-      for (const name of MOUTH_NAMES) mouthImgs[name] = await loadImage(mouths[name] ?? STOCK_MOUTHS[name]);
       const canvas = document.createElement("canvas");
-      canvas.width = 720;
-      canvas.height = 960;
+      canvas.width = SCENE_W;
+      canvas.height = SCENE_H;
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("Could not start the video.");
-      const stream = canvas.captureStream(24);
-      paintFrame(ctx, avatar, mouthImgs.closed, place, "closed");
-      const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 2_500_000 });
+      await drawScene(canvas, 0, "closed");
+      const canvasStream = canvas.captureStream(24);
+      let recordStream: MediaStream = canvasStream;
+      if (voiced.length) {
+        audioCtx = new AudioContext();
+        const dest = audioCtx.createMediaStreamDestination();
+        for (const person of voiced) {
+          const bytes = await (await fetch(person.audioUrl!)).arrayBuffer();
+          const buffer = await audioCtx.decodeAudioData(bytes);
+          const source = audioCtx.createBufferSource();
+          source.buffer = buffer;
+          source.connect(dest);
+          source.start();
+        }
+        recordStream = new MediaStream([
+          ...canvasStream.getVideoTracks(),
+          ...dest.stream.getAudioTracks(),
+        ]);
+      }
+      const rec = new MediaRecorder(recordStream, { mimeType, videoBitsPerSecond: 2_500_000 });
       const chunks: Blob[] = [];
       rec.ondataavailable = (event) => {
         if (event.data.size) chunks.push(event.data);
@@ -334,31 +563,45 @@ function Studio() {
         rec.onstop = () => resolve();
       });
       rec.start();
-      const beats = speechLine(2);
-      for (let i = 0; i < beats.length; i += 1) {
-        const beat = beats[i];
-        if (!beat) continue;
-        setShape(beat.shape);
-        paintFrame(ctx, avatar, mouthImgs[beat.shape], place, beat.shape);
-        setExportNote(`Exporting… ${Math.round(((i + 1) / beats.length) * 100)}%`);
-        await new Promise((resolve) => window.setTimeout(resolve, beat.ms));
+      if (voiced.length) {
+        const total = Math.max(...voiced.map((item) => item.durationMs ?? 0));
+        const steps = Math.max(1, Math.ceil(total / HOP_MS));
+        for (let i = 0; i < steps; i += 1) {
+          await drawScene(canvas, i * HOP_MS, "closed");
+          if (i % 10 === 0) setExportNote(`Exporting the table… ${Math.round(((i + 1) / steps) * 100)}%`);
+          await new Promise((resolve) => window.setTimeout(resolve, HOP_MS));
+        }
+      } else {
+        const beats = speechLine(2);
+        for (let i = 0; i < beats.length; i += 1) {
+          const beat = beats[i];
+          if (!beat) continue;
+          setShape(beat.shape);
+          await drawScene(canvas, 0, beat.shape);
+          setExportNote(`Exporting the table… ${Math.round(((i + 1) / beats.length) * 100)}%`);
+          await new Promise((resolve) => window.setTimeout(resolve, beat.ms));
+        }
       }
-      paintFrame(ctx, avatar, mouthImgs.closed, place, "closed");
+      await drawScene(canvas, 0, "closed");
       await new Promise((resolve) => window.setTimeout(resolve, 80));
       rec.stop();
       await stopped;
-      const blob = new Blob(chunks, { type: mime });
+      const blob = new Blob(chunks, { type: mimeType });
       const url = URL.createObjectURL(blob);
+      setClipUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return url;
+      });
       const link = document.createElement("a");
       link.href = url;
-      link.download = `${(seat?.name || "paper-mic").replace(/\s+/g, "-").toLowerCase()}.${mime.includes("mp4") ? "mp4" : "webm"}`;
+      link.download = `${(seat?.name || "paper-mic").replace(/\s+/g, "-").toLowerCase()}.${mimeType.includes("mp4") ? "mp4" : "webm"}`;
       link.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 4000);
       setShape("closed");
       setExportNote("Video downloaded.");
     } catch (err) {
       setExportNote(err instanceof Error ? err.message : "Could not export the video.");
     } finally {
+      void audioCtx?.close();
       setExporting(false);
     }
   }
@@ -383,6 +626,25 @@ function Studio() {
       mouthY: saved.mouthY,
       mouthScale: saved.mouthScale,
     };
+    const base = defaultSpot(seats.length, seats.length + 1, {
+      id: next.id,
+      name: next.name,
+      body: next.avatar ?? next.photo,
+      mouths: next.mouths ?? {},
+      mouthX: next.mouthX,
+      mouthY: next.mouthY,
+      mouthScale: next.mouthScale,
+    });
+    const spot: Spot = {
+      ...base,
+      mouthX: saved.mouthX,
+      mouthY: saved.mouthY,
+      mouthScale: saved.mouthScale,
+      ...(saved.sceneX === undefined ? {} : { x: saved.sceneX }),
+      ...(saved.sceneY === undefined ? {} : { y: saved.sceneY }),
+      ...(saved.sceneScale === undefined ? {} : { scale: saved.sceneScale }),
+    };
+    setSpots((prev) => ({ ...prev, [next.id]: spot }));
     setSeats((prev) => [...prev, next]);
     setActive(next.id);
   }
@@ -396,8 +658,164 @@ function Studio() {
   const mouths = seat?.mouths ?? STOCK_MOUTHS;
   const mouthSrc = mouths[shape] ?? STOCK_MOUTHS[shape];
 
+  useEffect(() => {
+    const canvas = sceneRef.current;
+    if (!canvas) return;
+    const gen = ++paintGen.current;
+    let cancel = false;
+    void drawScene(canvas, playMs, shape, gen).catch(() => {
+      if (!cancel) setExportNote("Could not draw the table.");
+    });
+    return () => {
+      cancel = true;
+    };
+  }, [playMs, shape, seats, background, usingAudio, spots, room, selected, castOn]);
+
+  function togglePerson(id: string) {
+    const item = seats.find((seatItem) => seatItem.id === id);
+    if (item) {
+      patch(id, { on: item.on === false });
+      return;
+    }
+    setCastOn((prev) => ({ ...prev, [id]: prev[id] === false }));
+  }
+
+  function spotFor(id: string): Spot {
+    const saved = spots[id];
+    if (saved) return saved;
+    const roster: ScenePerson[] = seats.length
+      ? seats.map((item) => ({
+          id: item.id,
+          name: item.name,
+          body: item.photo,
+          mouths: item.mouths ?? {},
+          mouthX: item.mouthX,
+          mouthY: item.mouthY,
+          mouthScale: item.mouthScale,
+        }))
+      : stockCast();
+    const index = Math.max(0, roster.findIndex((item) => item.id === id));
+    return defaultSpot(index, roster.length, roster[index] ?? roster[0]!);
+  }
+
+  function scenePoint(event: PointerEvent<HTMLCanvasElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return {
+      x: ((event.clientX - rect.left) / rect.width) * SCENE_W,
+      y: ((event.clientY - rect.top) / rect.height) * SCENE_H,
+    };
+  }
+
+  function pickBox(x: number, y: number): HitBox | null {
+    const inside = (box: HitBox) => x >= box.x && y >= box.y && x <= box.x + box.w && y <= box.y + box.h;
+    const boxes = boxesRef.current;
+    return (
+      boxes.find((box) => box.role === "handle" && inside(box)) ??
+      [...boxes].reverse().find((box) => box.kind === "mouth" && box.role === "body" && inside(box)) ??
+      [...boxes].reverse().find((box) => box.kind === "person" && box.role === "body" && inside(box)) ??
+      null
+    );
+  }
+
+  function onSceneDown(event: PointerEvent<HTMLCanvasElement>) {
+    const point = scenePoint(event);
+    const box = pickBox(point.x, point.y);
+    const kind = box?.kind ?? "background";
+    const id = box?.id ?? "background";
+    setSelected({ id, kind });
+    dragRef.current = {
+      id,
+      kind,
+      mode: box?.role === "handle" ? "resize" : "move",
+      x: point.x,
+      y: point.y,
+      origin: kind === "background" ? { ...room } : { ...spotFor(id) },
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function onSceneMove(event: PointerEvent<HTMLCanvasElement>) {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const point = scenePoint(event);
+    const dx = ((point.x - drag.x) / SCENE_W) * 100;
+    const dy = ((point.y - drag.y) / SCENE_H) * 100;
+    const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+    if (drag.kind === "background") {
+      const origin = drag.origin as { x: number; y: number; scale: number };
+      setRoom(
+        drag.mode === "resize"
+          ? { ...origin, scale: clamp(origin.scale + dx, 40, 250) }
+          : { ...origin, x: origin.x + dx, y: origin.y + dy },
+      );
+      return;
+    }
+    const origin = drag.origin as Spot;
+    const body = boxesRef.current.find((box) => box.id === drag.id && box.kind === "person" && box.role === "body");
+    let next = origin;
+    if (drag.kind === "person" && drag.mode === "move") next = { ...origin, x: origin.x + dx, y: origin.y + dy };
+    if (drag.kind === "person" && drag.mode === "resize") next = { ...origin, scale: clamp(origin.scale + dx, 20, 150) };
+    if (drag.kind === "mouth" && drag.mode === "move") {
+      const mx = body ? ((point.x - drag.x) / body.w) * 100 : dx;
+      const my = body ? ((point.y - drag.y) / body.h) * 100 : dy;
+      next = { ...origin, mouthX: clamp(origin.mouthX + mx, 5, 95), mouthY: clamp(origin.mouthY + my, 5, 90) };
+    }
+    if (drag.kind === "mouth" && drag.mode === "resize") {
+      next = { ...origin, mouthScale: clamp(origin.mouthScale + dx * 0.35, 4, 42) };
+    }
+    setSpots((prev) => ({ ...prev, [drag.id]: next }));
+    if (seats.some((item) => item.id === drag.id)) {
+      patch(drag.id, { mouthX: next.mouthX, mouthY: next.mouthY, mouthScale: next.mouthScale });
+    }
+  }
+
+  function onSceneUp() {
+    const drag = dragRef.current;
+    dragRef.current = null;
+    if (!drag || drag.kind === "background") return;
+    const item = seats.find((seatItem) => seatItem.id === drag.id);
+    if (item?.avatar && item.libraryId) void keep(item.id);
+  }
+
+  function jump(id: string) {
+    const root = document.getElementById("app-scroll");
+    const target = document.getElementById(id);
+    if (!root || !target) return;
+    const top = target.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop - 56;
+    root.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+  }
+
+  const jumps = [
+    ["mouths", "Mouths"],
+    ["backgrounds", "Backgrounds"],
+    ["table", "Table"],
+    ["lineup", "Lineup"],
+    ["portraits", "Portraits"],
+    ["stage", "Stage"],
+  ] as const;
+
   return (
-    <main className="mx-auto min-h-screen max-w-6xl px-4 py-8 pb-28 sm:px-6">
+    <main className="mx-auto min-h-full max-w-6xl px-4 py-8 pb-56 sm:px-6">
+      <nav className="sticky top-0 z-30 -mx-4 mb-6 flex gap-2 overflow-x-auto border-b border-line bg-paper px-4 py-2 sm:-mx-6 sm:px-6">
+        {jumps.map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => jump(id)}
+            className="h-11 shrink-0 rounded-full border border-line bg-cream px-4 text-sm font-medium text-ink"
+          >
+            {label}
+          </button>
+        ))}
+        <button
+          type="button"
+          className="h-11 shrink-0 rounded-full bg-sienna px-4 text-sm font-medium text-cream disabled:opacity-40"
+          disabled={exporting}
+          onClick={() => void exportVideo()}
+        >
+          {exporting ? "Exporting…" : "Export"}
+        </button>
+      </nav>
       <a
         href="/distrokid-daily-streams.csv"
         download="distrokid-daily-streams.csv"
@@ -417,6 +835,20 @@ function Studio() {
           <h1 className="font-display text-4xl text-balance text-ink sm:text-5xl">
             Load headshots. Draw the cast.
           </h1>
+          {(typeof window === "undefined" || window.location.port !== "47321") && (
+            <a
+              href="/paper-mic-mac.zip"
+              download="Paper-Mic-Mac.zip"
+              className="mt-4 inline-flex h-12 items-center rounded-full bg-ink px-5 font-medium text-cream"
+            >
+              Download the Mac app
+            </a>
+          )}
+          {(typeof window === "undefined" || window.location.port !== "47321") && (
+            <p className="mt-2 max-w-xl text-sm text-muted">
+              Unzip it, then right-click Paper Mic and choose Open the first time. After that, double-click it.
+            </p>
+          )}
           <p className="mt-2 max-w-xl text-pretty text-muted">
             Drop a photo of each person. Paper Mic redraws them as an ink-and-watercolor avatar,
             then cuts the six mouth shapes the cartoon needs to talk.
@@ -443,7 +875,7 @@ function Studio() {
         />
       </header>
 
-      <section className="mb-8">
+      <section id="mouths" className="jump-target mb-8">
         <h2 className="font-display text-2xl text-ink">Mouth parts</h2>
         <p className="mt-1 max-w-xl text-sm text-muted">
           Drawn for these faces. Each shape is its own picture with a transparent background. Download the six for a person, then set them as that person’s mouth.
@@ -477,7 +909,7 @@ function Studio() {
         </div>
       </section>
 
-      <section className="mb-8">
+      <section id="backgrounds" className="jump-target mb-8">
         <h2 className="font-display text-2xl text-ink">Backgrounds</h2>
         <div className="mt-3 grid gap-4 sm:grid-cols-2">
           {[
@@ -497,7 +929,7 @@ function Studio() {
         </div>
       </section>
 
-      <section className="mb-8">
+      <section id="table" className="jump-target mb-8">
         <h2 className="font-display text-2xl text-ink">At the table</h2>
         <p className="mt-1 text-sm text-muted">Adam is with them. Each person and the table is its own layer.</p>
         <article className="mt-3 overflow-hidden rounded-3xl border border-line bg-cream">
@@ -537,7 +969,7 @@ function Studio() {
         </div>
       </section>
 
-      <section className="mb-8">
+      <section id="lineup" className="jump-target mb-8">
         <h2 className="font-display text-2xl text-ink">Lined up</h2>
         <p className="mt-1 text-sm text-muted">Each person from the group shot, same size, ready to sit behind the table.</p>
         <article className="mt-3 overflow-hidden rounded-3xl border border-line bg-cream">
@@ -571,7 +1003,7 @@ function Studio() {
         </div>
       </section>
 
-      <section className="mb-8 flex flex-col gap-8">
+      <section id="portraits" className="jump-target mb-8 flex flex-col gap-8">
         {CAST.map((person) => (
           <div key={person.name}>
             <h2 className="font-display text-2xl text-ink">{person.name}</h2>
@@ -602,6 +1034,57 @@ function Studio() {
         ))}
       </section>
 
+      <div id="stage" className="jump-target">
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <h2 className="mr-2 font-display text-2xl text-ink">The table</h2>
+          {BACKGROUNDS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setBackground(item.id)}
+              className={`h-11 rounded-full px-4 text-sm font-medium ${
+                background === item.id ? "bg-ink text-cream" : "border border-line bg-cream text-ink"
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <div className="mb-3 flex flex-wrap gap-2">
+          {(seats.length
+            ? seats.map((item) => ({ id: item.id, name: item.name || "Person", on: item.on !== false }))
+            : stockCast().map((item) => ({
+                id: item.id,
+                name: MOUTH_PEOPLE.find((person) => person.id === item.id)?.label ?? item.name,
+                on: castOn[item.id] !== false,
+              }))
+          ).map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              aria-pressed={item.on}
+              onClick={() => togglePerson(item.id)}
+              className={`h-11 rounded-full px-4 text-sm font-medium ${
+                item.on ? "bg-ink text-cream" : "border border-line bg-cream text-muted line-through"
+              }`}
+            >
+              {item.name} {item.on ? "On" : "Off"}
+            </button>
+          ))}
+        </div>
+        <canvas
+          ref={sceneRef}
+          width={SCENE_W}
+          height={SCENE_H}
+          onPointerDown={onSceneDown}
+          onPointerMove={onSceneMove}
+          onPointerUp={onSceneUp}
+          onPointerCancel={onSceneUp}
+          className="aspect-video w-full cursor-grab touch-none rounded-3xl bg-ink"
+        />
+        <p className="mt-2 mb-6 text-sm text-muted">
+          Drag a person to move them. Drag their mouth to place it. Drag the orange corner to resize. Drag empty space to move the room.
+        </p>
       {seats.length === 0 ? (
         <button
           type="button"
@@ -628,7 +1111,7 @@ function Studio() {
                     top: `${seat.mouthY}%`,
                     width: `${seat.mouthScale}%`,
                     transformOrigin: "center 18%",
-                    transform: `translateX(-50%) scaleY(${talking || exporting ? JAW[shape] : 1})`,
+                    transform: `translateX(-50%) scaleY(${playing || exporting || playMs > 0 ? JAW[shape] : 1})`,
                   }}
                 />
               </div>
@@ -649,10 +1132,10 @@ function Studio() {
               <button
                 type="button"
                 className="h-11 rounded-full bg-ink px-4 text-cream disabled:opacity-40"
-                disabled={!seat || talking || exporting}
-                onClick={() => setTalking(true)}
+                disabled={!seat || playing || exporting}
+                onClick={togglePlay}
               >
-                Play a line
+                {playing ? "Pause" : "Play"}
               </button>
               <button
                 type="button"
@@ -669,7 +1152,8 @@ function Studio() {
                     type="button"
                     aria-label={name}
                     onClick={() => {
-                      setTalking(false);
+                      setPlaying(false);
+                      seek(0);
                       setShape(name);
                     }}
                     className={`h-11 w-11 overflow-hidden rounded-full border ${
@@ -681,44 +1165,6 @@ function Studio() {
                 ))}
               </div>
             </div>
-
-            {seat?.avatar && (
-              <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                <label className="text-sm text-muted">
-                  Mouth sideways
-                  <input
-                    type="range"
-                    min={30}
-                    max={70}
-                    value={seat.mouthX}
-                    onChange={(e) => patch(seat.id, { mouthX: Number(e.target.value) })}
-                    className="mt-1 w-full"
-                  />
-                </label>
-                <label className="text-sm text-muted">
-                  Mouth height
-                  <input
-                    type="range"
-                    min={20}
-                    max={80}
-                    value={seat.mouthY}
-                    onChange={(e) => patch(seat.id, { mouthY: Number(e.target.value) })}
-                    className="mt-1 w-full"
-                  />
-                </label>
-                <label className="text-sm text-muted">
-                  Mouth size
-                  <input
-                    type="range"
-                    min={8}
-                    max={40}
-                    value={seat.mouthScale}
-                    onChange={(e) => patch(seat.id, { mouthScale: Number(e.target.value) })}
-                    className="mt-1 w-full"
-                  />
-                </label>
-              </div>
-            )}
           </section>
 
           <aside className="flex flex-col gap-3">
@@ -756,6 +1202,22 @@ function Studio() {
                   placeholder="Keep the glasses, warmer coat…"
                   className="mt-2 h-10 w-full rounded-xl border border-line bg-paper px-3 text-sm outline-none"
                 />
+                <label className="mt-2 flex h-11 cursor-pointer items-center justify-center rounded-full border border-line px-3 text-sm font-medium text-ink">
+                  {item.audioBusy ? "Reading audio…" : item.audioName ? item.audioName : "Add their audio"}
+                  <input
+                    type="file"
+                    accept="audio/*"
+                    className="sr-only"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      event.target.value = "";
+                      void attachAudio(item.id, file);
+                    }}
+                  />
+                </label>
+                {item.durationMs ? (
+                  <p className="mt-1 text-sm text-muted">Mouth follows this clip · {clock(item.durationMs)}</p>
+                ) : null}
                 <div className="mt-2 flex gap-2">
                   <button
                     type="button"
@@ -781,7 +1243,7 @@ function Studio() {
                       onClick={() => void keep(item.id)}
                       className="h-11 text-sm font-medium text-sienna"
                     >
-                      {item.kept ? "Update saved copy" : "Keep avatar"}
+                      {item.kept ? "Update saved copy" : "Keep mouth on this face"}
                     </button>
                     <a
                       href={item.avatar}
@@ -796,11 +1258,12 @@ function Studio() {
               </article>
             ))}
             <p className="px-1 text-sm text-pretty text-muted">
-              Mouth buttons use a shared ink kit until you cut a set from that avatar. Place the mouth with the sliders, then play a line. Kept avatars stay in this browser.
+              Mouth buttons use a shared ink kit until you cut a set from that avatar. Add each person’s audio and their mouth follows that voice. The loudest person stays on stage.
             </p>
           </aside>
         </div>
       )}
+      </div>
       {(library.length > 0 || libraryError) && (
         <section className="mt-8">
           <h2 className="font-display text-2xl text-ink">Saved cast</h2>
@@ -824,20 +1287,47 @@ function Studio() {
           </div>
         </section>
       )}
-      <div className="fixed inset-x-0 bottom-0 z-20 border-t border-line bg-paper/95 px-4 py-3">
-        <div className="mx-auto flex max-w-6xl flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-muted">
-            {exportNote ?? "Scroll for the rest of the cast. Export records the face talking."}
-          </p>
-          <div className="flex gap-2">
+      {seats.map((item) =>
+        item.audioUrl ? (
+          <audio
+            key={item.audioUrl}
+            src={item.audioUrl}
+            preload="auto"
+            ref={(el) => {
+              audioRefs.current[item.id] = el;
+            }}
+          />
+        ) : null,
+      )}
+      <div className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-paper px-4 py-3">
+        <div className="mx-auto flex max-w-6xl flex-col gap-3">
+          {clipUrl && (
+            <video src={clipUrl} controls playsInline className="max-h-40 w-full rounded-xl bg-ink" />
+          )}
+          <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
               className="h-11 rounded-full bg-ink px-4 text-sm text-cream disabled:opacity-40"
-              disabled={talking || exporting}
-              onClick={() => setTalking(true)}
+              disabled={exporting}
+              onClick={togglePlay}
             >
-              Play a line
+              {playing ? "Pause" : "Play"}
             </button>
+            <span className="w-16 text-sm tabular-nums text-muted">{clock(playMs)}</span>
+            <input
+              aria-label="Playback position"
+              type="range"
+              min={0}
+              max={duration}
+              step={HOP_MS}
+              value={Math.min(playMs, duration)}
+              onChange={(event) => {
+                setPlaying(false);
+                seek(Number(event.target.value));
+              }}
+              className="h-11 min-w-40 flex-1"
+            />
+            <span className="w-16 text-sm tabular-nums text-muted">{clock(duration)}</span>
             <button
               type="button"
               className="h-11 rounded-full bg-sienna px-4 text-sm font-medium text-cream disabled:opacity-40"
@@ -847,6 +1337,12 @@ function Studio() {
               {exporting ? "Exporting…" : "Export video"}
             </button>
           </div>
+          <p className="text-sm text-muted">
+            {exportNote ??
+              (usingAudio
+                ? "Mouths follow the uploaded audio. The bar covers the whole clip, and the loudest voice is on stage."
+                : "Add an audio file on each person. Until then, Play runs a short sample.")}
+          </p>
         </div>
       </div>
     </main>

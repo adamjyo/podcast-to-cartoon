@@ -23,10 +23,12 @@ The first episode downloads speech models and needs the internet. Transcripts an
 
 ## Browser studio
 
-The latest studio is in `web/`. The page scrolls, a line plays with a speech-like jaw, and **Export video** downloads a short clip of the face talking.
+The latest studio is in `web/`. Each person can have their own audio. The 16:9 table shows everyone who is turned on, mouths follow that audio, and you drag people, mouths, and the room. Mouth placement is saved with the avatar. **Export video** records the table.
 
 ```bash
 cd web
 npm install
 npm run dev
 ```
+
+`web/vite.mac.config.ts` builds the small double-click Mac wrapper in `web/mac`. The full Mac app is still the Python app from Actions.

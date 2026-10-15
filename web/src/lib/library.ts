@@ -10,6 +10,9 @@ export type SavedAvatar = {
   mouthX: number;
   mouthY: number;
   mouthScale: number;
+  sceneX?: number;
+  sceneY?: number;
+  sceneScale?: number;
   savedAt: number;
 };
 

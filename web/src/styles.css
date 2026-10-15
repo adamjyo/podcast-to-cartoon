@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@source ".";
 
 @theme {
   --color-paper: #f3ecdf;
@@ -15,24 +16,37 @@
 @layer base {
   html {
     -webkit-font-smoothing: antialiased;
-    height: auto;
-    min-height: 100%;
-    overflow-x: hidden;
-    overflow-y: auto;
+    height: 100%;
+    overflow: hidden;
   }
   body {
     background: var(--color-paper);
     color: var(--color-ink);
     font-family: var(--font-sans);
-    height: auto;
-    min-height: 100%;
-    overflow-x: hidden;
-    overflow-y: visible;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
   }
   button:not(:disabled),
   [role="button"]:not(:disabled) {
     cursor: pointer;
   }
+}
+
+#app-scroll {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  background: var(--color-paper);
+  scrollbar-gutter: stable;
+}
+
+.jump-target {
+  scroll-margin-top: 4.5rem;
 }
 
 .cutout {
