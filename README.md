@@ -19,3 +19,14 @@ The Puppet tab places each mouth and sets how big that person stands. The Set ta
 4. To draw avatars from headshots, paste your own xAI API key. The key stays on this Mac. Without it you can still keep the photo and use it as the puppet.
 
 The first episode downloads speech models and needs the internet. Transcripts and videos land on the Desktop in `Podcast Processor`.
+
+
+## Browser studio
+
+The latest studio is in `web/`. The page scrolls, a line plays with a speech-like jaw, and **Export video** downloads a short clip of the face talking.
+
+```bash
+cd web
+npm install
+npm run dev
+```

@@ -159,7 +159,12 @@ def render_cartoon(result, audio_path, out_path, names, cast_for_speaker=None, p
             x = (W - (sum(widths) + gap * (n - 1))) // 2
             for idx, sp in enumerate(speakers):
                 ink, fill = PALETTE[idx % len(PALETTE)]
-                talking = mouth_at(cues, t) if sp == active and cues else ("closed" if sp != active else TALK[(i // 2) % len(TALK)])
+                if isinstance(cues, dict):
+                    talking = mouth_at(cues.get(sp) or [], t)
+                elif sp == active and cues:
+                    talking = mouth_at(cues, t)
+                else:
+                    talking = "closed" if sp != active else TALK[(i // 2) % len(TALK)]
                 card = _card(cast_for_speaker.get(sp), labels[sp], ink, fill, talking)
                 card_w = widths[idx]
                 card = card.resize((card_w, int(card.height * card_w / card.width)), Image.LANCZOS)

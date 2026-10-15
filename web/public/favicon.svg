@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Paper Mic">
+  <rect width="32" height="32" rx="7" fill="#f3ecdf"/>
+  <rect x="10.5" y="4.5" width="11" height="15" rx="5.5" fill="#1c2420"/>
+  <rect x="10.5" y="10" width="11" height="3" fill="#c45c26"/>
+  <rect x="14.5" y="19.5" width="3" height="5" rx="1" fill="#1c2420"/>
+  <rect x="9" y="24.5" width="14" height="2.6" rx="1.3" fill="#1c2420"/>
+</svg>

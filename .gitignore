@@ -1,0 +1,6 @@
+node_modules/
+.grok/
+.vercel/
+__pycache__/
+*.pyc
+web/public/distrokid-daily-streams.csv
