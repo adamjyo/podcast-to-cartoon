@@ -21,7 +21,7 @@ os.environ["SSL_CERT_FILE"] = certifi.where()
 os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 os.environ["CURL_CA_BUNDLE"] = certifi.where()
 
-from cast_library import SUPPORT, forget_cast, install_included, keep_cast, list_cast, load_cast, update_puppet
+from cast_library import SUPPORT, forget_cast, install_included, keep_cast, list_cast, load_cast, update_placement, update_puppet
 from draw_avatar import draw_avatar, draw_background, draw_mouths, parse_mouth_sheet
 from podcast_processor import process_audio, process_tracks, speakers_in
 from podcast_video import PALETTE, preview_puppet, render_cartoon
@@ -585,25 +585,32 @@ class App:
         label = name or f"Person {len(self.parts) + 1}"
         person = ""
         mouths = {}
-        mouth_x, mouth_y, mouth_s = 50.0, 46.0, 16.0
+        mouth_x, mouth_y, mouth_s = 50.0, 42.0, 18.0
+        cast_id = ""
+        scene_x = scene_y = scene_h = None
         matches = [item for item in (self.cast or list_cast()) if (item.get("name") or "") == label]
         matches.sort(key=lambda item: (0 if str(item.get("id", "")).startswith("included-") else 1, -(item.get("savedAt") or 0)))
         if matches:
             loaded = load_cast(matches[0]["id"])
+            cast_id = loaded.get("id") or ""
             person = loaded.get("avatar") or ""
             mouths = dict(loaded.get("mouths") or {})
             mouth_x = float(loaded.get("mouthX") or 50)
-            mouth_y = float(loaded.get("mouthY") or 46)
-            mouth_s = float(loaded.get("mouthScale") or 16)
+            mouth_y = float(loaded.get("mouthY") or 42)
+            mouth_s = float(loaded.get("mouthScale") or 18)
+            scene_x = loaded.get("sceneX")
+            scene_y = loaded.get("sceneY")
+            scene_h = loaded.get("sceneH")
         index = len(self.parts)
         self.parts.append({
             "name": tk.StringVar(value=label),
             "audio": "",
             "person": person,
             "mouths": mouths,
-            "x": 0.02 + index * 0.16,
-            "y": 0.42,
-            "h": 0.5,
+            "cast_id": cast_id,
+            "x": float(scene_x) if scene_x is not None else 0.03 + index * 0.155,
+            "y": float(scene_y) if scene_y is not None else 0.08,
+            "h": float(scene_h) if scene_h is not None else 0.78,
             "mouthX": mouth_x,
             "mouthY": mouth_y,
             "mouthScale": mouth_s,
@@ -693,7 +700,10 @@ class App:
             self._apply_crop()
             self.draw_scene()
             return
+        drag = self.drag
         self.drag = None
+        if drag and drag[1] >= 0:
+            self._save_slot_placement(drag[1])
         if getattr(self, "_panning", False):
             self._panning = False
             self.remember_camera()
@@ -791,6 +801,7 @@ class App:
             self._outline((px, py, sw, sh), "#c45c26", self.selection == ("person", index))
             if mouth_box:
                 self._outline(mouth_box, "#f6f1e7", self.selection == ("mouth", index))
+        self._draw_table(width, height)
         fg_path = self.fg.get("path") or ""
         self.fg["_box"] = None
         if fg_path and Path(fg_path).exists():
@@ -813,6 +824,33 @@ class App:
             x0, y0, x1, y1 = self._crop_rect
             self.scene.create_rectangle(x0, y0, x1, y1, outline="#f6f1e7", dash=(4, 3), width=2)
         self.draw_track()
+
+    def _draw_table(self, width, height):
+        tx, ty, tw, th = self._screen_box(0, height * 0.68, width, height * 0.34)
+        self.scene.create_rectangle(tx, ty, tx + tw, ty + max(8, int(th * 0.16)), fill="#c4a27a", outline="")
+        self.scene.create_rectangle(tx, ty + int(th * 0.12), tx + tw, ty + th + 8, fill="#6b4228", outline="")
+        self.scene.create_rectangle(tx + int(tw * 0.08), ty + int(th * 0.55), tx + int(tw * 0.14), ty + th, fill="#4a2c18", outline="")
+        self.scene.create_rectangle(tx + int(tw * 0.86), ty + int(th * 0.55), tx + int(tw * 0.92), ty + th, fill="#4a2c18", outline="")
+
+    def _save_slot_placement(self, index):
+        if not (0 <= index < len(self.parts)):
+            return
+        slot = self.parts[index]
+        cast_id = slot.get("cast_id")
+        if not cast_id:
+            return
+        try:
+            update_placement(
+                cast_id,
+                float(slot["mouthX"]),
+                float(slot["mouthY"]),
+                float(slot["mouthScale"]),
+                float(slot["x"]),
+                float(slot["y"]),
+                float(slot["h"]),
+            )
+        except FileNotFoundError:
+            return
 
     def _outline(self, box, color, selected):
         if self._play_started:
@@ -1407,6 +1445,8 @@ class App:
     def export_group(self):
         people = []
         for slot in self.parts:
+            if not slot["on"].get():
+                continue
             people.append({
                 "name": slot["name"].get().strip() or "Person",
                 "audio": slot["audio"],

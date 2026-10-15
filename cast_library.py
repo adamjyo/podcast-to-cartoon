@@ -96,6 +96,9 @@ def keep_cast(
     mouth_y: float,
     mouth_scale: float,
     mouths: dict | None = None,
+    scene_x: float | None = None,
+    scene_y: float | None = None,
+    scene_h: float | None = None,
 ):
     import time
 
@@ -125,6 +128,9 @@ def keep_cast(
         "mouthY": mouth_y,
         "mouthScale": mouth_scale,
         "puppetScale": existing.get("puppetScale", 1),
+        "sceneX": scene_x if scene_x is not None else existing.get("sceneX"),
+        "sceneY": scene_y if scene_y is not None else existing.get("sceneY"),
+        "sceneH": scene_h if scene_h is not None else existing.get("sceneH"),
         "savedAt": time.time(),
     }
     _meta_path(folder).write_text(json.dumps(payload, indent=2))
@@ -141,6 +147,30 @@ def update_puppet(avatar_id: str, mouth_x: float, mouth_y: float, mouth_scale: f
     data["mouthY"] = mouth_y
     data["mouthScale"] = mouth_scale
     data["puppetScale"] = puppet_scale
+    meta_file.write_text(json.dumps(data, indent=2))
+    return load_cast(avatar_id)
+
+
+def update_placement(
+    avatar_id: str,
+    mouth_x: float,
+    mouth_y: float,
+    mouth_scale: float,
+    scene_x: float,
+    scene_y: float,
+    scene_h: float,
+):
+    folder = CAST / avatar_id
+    meta_file = _meta_path(folder)
+    if not meta_file.exists():
+        raise FileNotFoundError(avatar_id)
+    data = json.loads(meta_file.read_text())
+    data["mouthX"] = mouth_x
+    data["mouthY"] = mouth_y
+    data["mouthScale"] = mouth_scale
+    data["sceneX"] = scene_x
+    data["sceneY"] = scene_y
+    data["sceneH"] = scene_h
     meta_file.write_text(json.dumps(data, indent=2))
     return load_cast(avatar_id)
 
