@@ -1,5 +1,8 @@
 @import "tailwindcss";
-@source ".";
+@source not "../artifacts";
+@source not "../mac/dist";
+@source not "../attachments";
+
 
 @theme {
   --color-paper: #f3ecdf;
@@ -37,8 +40,7 @@
   position: fixed;
   inset: 0;
   z-index: 1;
-  overflow-x: hidden;
-  overflow-y: scroll;
+  overflow: hidden;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   background: var(--color-paper);

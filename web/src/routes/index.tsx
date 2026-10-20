@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { drawAvatar, drawMouths } from "@/lib/draw";
 import { forgetAvatar, keepAvatar, listAvatars, type SavedAvatar } from "@/lib/library";
 import { HOP_MS, openness, readSpeech, shapeOnTrack } from "@/lib/audio-mouths";
-import { BACKGROUNDS, defaultSpot, paintTable, SCENE_H, SCENE_W, stockCast, type BackgroundId, type HitBox, type ScenePerson, type Spot } from "@/lib/scene";
+import { BACKGROUNDS, defaultSpot, paintTable, SCENE_H, SCENE_W, stockCast, type HitBox, type ScenePerson, type Spot } from "@/lib/scene";
 import {
   JAW,
   MOUTH_NAMES,
@@ -148,9 +148,16 @@ export function Studio() {
   const [exportNote, setExportNote] = useState<string | null>(null);
   const [library, setLibrary] = useState<SavedAvatar[]>([]);
   const [libraryError, setLibraryError] = useState<string | null>(null);
-  const [background, setBackground] = useState<BackgroundId>("coffee");
+  const [background, setBackground] = useState("coffee");
   const [spots, setSpots] = useState<Record<string, Spot>>({});
   const [room, setRoom] = useState({ x: 50, y: 50, scale: 100 });
+  const [editLayer, setEditLayer] = useState<"background" | "foreground">("background");
+  const [fgId, setFgId] = useState("none");
+  const [fgPlace, setFgPlace] = useState({ x: 50, y: 62, scale: 46 });
+  const [fgItems, setFgItems] = useState<{ id: string; label: string; href: string }[]>([]);
+  const [bgItems, setBgItems] = useState<{ id: string; label: string; href: string; x: number; y: number; scale: number }[]>(
+    () => BACKGROUNDS.map((item) => ({ id: item.id, label: item.label, href: item.href, x: 50, y: 50, scale: 100 })),
+  );
   const [selected, setSelected] = useState<{ id: string; kind: HitBox["kind"] }>({
     id: "background",
     kind: "background",
@@ -158,6 +165,8 @@ export function Studio() {
   const [castOn, setCastOn] = useState<Record<string, boolean>>({});
   const [layoutReady, setLayoutReady] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fgFileRef = useRef<HTMLInputElement>(null);
+  const bgFileRef = useRef<HTMLInputElement>(null);
   const sceneRef = useRef<HTMLCanvasElement>(null);
   const boxesRef = useRef<HitBox[]>([]);
   const dragRef = useRef<{
@@ -469,9 +478,8 @@ export function Studio() {
           shape: sample,
         }));
     const roster = everyone.filter((entry) => personOn(entry.person.id));
-    const bg = BACKGROUNDS.find((item) => item.id === background) ?? BACKGROUNDS[0];
-    const backgroundImg = await loadCached(bg.href);
-    const tableImg = await loadCached("/cast/layers/table.png");
+    const bg = bgItems.find((item) => item.id === background) ?? bgItems[0];
+    const backgroundImg = await loadCached(bg?.href ?? BACKGROUNDS[0].href);
     const painted = [];
     for (let index = 0; index < roster.length; index += 1) {
       const entry = roster[index];
@@ -487,7 +495,10 @@ export function Studio() {
       });
     }
     if (gen !== undefined && gen !== paintGen.current) return;
-    boxesRef.current = paintTable(ctx, backgroundImg, tableImg, painted, room, selected);
+    const fg = fgItems.find((item) => item.id === fgId);
+    const foreground = fg ? { image: await loadCached(fg.href), place: fgPlace } : null;
+    if (gen !== undefined && gen !== paintGen.current) return;
+    boxesRef.current = paintTable(ctx, backgroundImg, painted, room, selected, editLayer, foreground);
   }
 
   function paintFrame(
@@ -669,7 +680,7 @@ export function Studio() {
     return () => {
       cancel = true;
     };
-  }, [playMs, shape, seats, background, usingAudio, spots, room, selected, castOn]);
+  }, [playMs, shape, seats, background, usingAudio, spots, room, selected, castOn, editLayer, fgId, fgItems, fgPlace, bgItems]);
 
   function togglePerson(id: string) {
     const item = seats.find((seatItem) => seatItem.id === id);
@@ -720,16 +731,28 @@ export function Studio() {
   function onSceneDown(event: PointerEvent<HTMLCanvasElement>) {
     const point = scenePoint(event);
     const box = pickBox(point.x, point.y);
-    const kind = box?.kind ?? "background";
-    const id = box?.id ?? "background";
-    setSelected({ id, kind });
+    if (editLayer === "foreground") {
+      if (fgId === "none") return;
+      setSelected({ id: "foreground", kind: "foreground" });
+      dragRef.current = {
+        id: "foreground",
+        kind: "foreground",
+        mode: box?.role === "handle" ? "resize" : "move",
+        x: point.x,
+        y: point.y,
+        origin: { ...fgPlace },
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
+    setSelected({ id: "background", kind: "background" });
     dragRef.current = {
-      id,
-      kind,
+      id: "background",
+      kind: "background",
       mode: box?.role === "handle" ? "resize" : "move",
       x: point.x,
       y: point.y,
-      origin: kind === "background" ? { ...room } : { ...spotFor(id) },
+      origin: { ...room },
     };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -741,32 +764,13 @@ export function Studio() {
     const dx = ((point.x - drag.x) / SCENE_W) * 100;
     const dy = ((point.y - drag.y) / SCENE_H) * 100;
     const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-    if (drag.kind === "background") {
-      const origin = drag.origin as { x: number; y: number; scale: number };
-      setRoom(
-        drag.mode === "resize"
-          ? { ...origin, scale: clamp(origin.scale + dx, 40, 250) }
-          : { ...origin, x: origin.x + dx, y: origin.y + dy },
-      );
-      return;
-    }
-    const origin = drag.origin as Spot;
-    const body = boxesRef.current.find((box) => box.id === drag.id && box.kind === "person" && box.role === "body");
-    let next = origin;
-    if (drag.kind === "person" && drag.mode === "move") next = { ...origin, x: origin.x + dx, y: origin.y + dy };
-    if (drag.kind === "person" && drag.mode === "resize") next = { ...origin, scale: clamp(origin.scale + dx, 20, 150) };
-    if (drag.kind === "mouth" && drag.mode === "move") {
-      const mx = body ? ((point.x - drag.x) / body.w) * 100 : dx;
-      const my = body ? ((point.y - drag.y) / body.h) * 100 : dy;
-      next = { ...origin, mouthX: clamp(origin.mouthX + mx, 5, 95), mouthY: clamp(origin.mouthY + my, 5, 90) };
-    }
-    if (drag.kind === "mouth" && drag.mode === "resize") {
-      next = { ...origin, mouthScale: clamp(origin.mouthScale + dx * 0.35, 4, 42) };
-    }
-    setSpots((prev) => ({ ...prev, [drag.id]: next }));
-    if (seats.some((item) => item.id === drag.id)) {
-      patch(drag.id, { mouthX: next.mouthX, mouthY: next.mouthY, mouthScale: next.mouthScale });
-    }
+    const origin = drag.origin as { x: number; y: number; scale: number };
+    const next =
+      drag.mode === "resize"
+        ? { ...origin, scale: clamp(origin.scale + dx, drag.kind === "foreground" ? 8 : 40, drag.kind === "foreground" ? 180 : 250) }
+        : { ...origin, x: origin.x + dx, y: origin.y + dy };
+    if (drag.kind === "foreground") setFgPlace(next);
+    else setRoom(next);
   }
 
   function onSceneUp() {
@@ -777,8 +781,44 @@ export function Studio() {
     if (item?.avatar && item.libraryId) void keep(item.id);
   }
 
+  function activateLayer(layer: "background" | "foreground") {
+    setEditLayer(layer);
+    setSelected(layer === "background" ? { id: "background", kind: "background" } : { id: "foreground", kind: "foreground" });
+  }
+
+  function chooseBackground(id: string) {
+    const chosen = bgItems.find((item) => item.id === id);
+    setBgItems((prev) => prev.map((item) => (item.id === background ? { ...item, x: room.x, y: room.y, scale: room.scale } : item)));
+    if (chosen) setRoom({ x: chosen.x, y: chosen.y, scale: chosen.scale });
+    setBackground(id);
+    activateLayer("background");
+  }
+
+  function addLayerFile(layer: "background" | "foreground", file: File | undefined) {
+    if (!file) return;
+    const item = {
+      id: crypto.randomUUID(),
+      label: file.name.replace(/\.[^.]+$/, "") || "New",
+      href: URL.createObjectURL(file),
+      x: 50,
+      y: layer === "foreground" ? 62 : 50,
+      scale: layer === "foreground" ? 46 : 100,
+    };
+    if (layer === "foreground") {
+      setFgItems((prev) => [...prev, item]);
+      setFgId(item.id);
+      setFgPlace({ x: item.x, y: item.y, scale: item.scale });
+      activateLayer("foreground");
+      return;
+    }
+    setBgItems((prev) => [...prev, item]);
+    setRoom({ x: item.x, y: item.y, scale: item.scale });
+    setBackground(item.id);
+    activateLayer("background");
+  }
+
   function jump(id: string) {
-    const root = document.getElementById("app-scroll");
+    const root = document.getElementById("options-scroll");
     const target = document.getElementById(id);
     if (!root || !target) return;
     const top = target.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop - 56;
@@ -795,6 +835,72 @@ export function Studio() {
   ] as const;
 
   return (
+    <div className="flex h-full min-h-0 w-full">
+      <section className="flex h-full min-w-0 flex-col gap-3 overflow-y-auto p-3" style={{ width: "75%" }}>
+        <canvas
+          ref={sceneRef}
+          width={SCENE_W}
+          height={SCENE_H}
+          onPointerDown={onSceneDown}
+          onPointerMove={onSceneMove}
+          onPointerUp={onSceneUp}
+          onPointerCancel={onSceneUp}
+          className="aspect-video w-full shrink-0 cursor-grab touch-none rounded-3xl bg-ink"
+        />
+        <div className={`rounded-2xl border p-3 ${editLayer === "foreground" ? "border-sienna bg-cream" : "border-line bg-paper"}`}>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={() => activateLayer("foreground")} className="h-11 rounded-full bg-ink px-4 text-sm font-medium text-cream">
+              Foreground
+            </button>
+            <select
+              aria-label="Foreground elements"
+              value={fgId}
+              onChange={(event) => {
+                setFgId(event.target.value);
+                activateLayer("foreground");
+              }}
+              className="h-11 min-w-40 flex-1 rounded-xl border border-line bg-cream px-3 text-sm text-ink"
+            >
+              <option value="none">None</option>
+              {fgItems.map((item) => (
+                <option key={item.id} value={item.id}>{item.label}</option>
+              ))}
+            </select>
+            <button type="button" onClick={() => fgFileRef.current?.click()} className="h-11 rounded-full border border-line bg-cream px-4 text-sm font-medium text-ink">
+              Add new
+            </button>
+          </div>
+          <p className="mt-2 text-sm text-muted">
+            {editLayer === "foreground" ? "Foreground is the only thing you can move." : "Click Foreground to edit only this layer."}
+          </p>
+        </div>
+        <div className={`rounded-2xl border p-3 ${editLayer === "background" ? "border-sienna bg-cream" : "border-line bg-paper"}`}>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={() => activateLayer("background")} className="h-11 rounded-full bg-ink px-4 text-sm font-medium text-cream">
+              Background
+            </button>
+            <select
+              aria-label="Background elements"
+              value={background}
+              onChange={(event) => chooseBackground(event.target.value)}
+              className="h-11 min-w-40 flex-1 rounded-xl border border-line bg-cream px-3 text-sm text-ink"
+            >
+              {bgItems.map((item) => (
+                <option key={item.id} value={item.id}>{item.label}</option>
+              ))}
+            </select>
+            <button type="button" onClick={() => bgFileRef.current?.click()} className="h-11 rounded-full border border-line bg-cream px-4 text-sm font-medium text-ink">
+              Add new
+            </button>
+          </div>
+          <p className="mt-2 text-sm text-muted">
+            {editLayer === "background" ? "Background is the only thing you can move. Drag to slide it, drag the orange corner to resize." : "Click Background to edit only this layer."}
+          </p>
+        </div>
+        <input ref={fgFileRef} type="file" accept="image/*" className="sr-only" onChange={(event) => { addLayerFile("foreground", event.target.files?.[0]); event.target.value = ""; }} />
+        <input ref={bgFileRef} type="file" accept="image/*" className="sr-only" onChange={(event) => { addLayerFile("background", event.target.files?.[0]); event.target.value = ""; }} />
+      </section>
+      <aside id="options-scroll" className="h-full min-w-0 overflow-y-auto border-l border-line bg-paper p-3" style={{ width: "25%" }}>
     <main className="mx-auto min-h-full max-w-6xl px-4 py-8 pb-56 sm:px-6">
       <nav className="sticky top-0 z-30 -mx-4 mb-6 flex gap-2 overflow-x-auto border-b border-line bg-paper px-4 py-2 sm:-mx-6 sm:px-6">
         {jumps.map(([id, label]) => (
@@ -816,42 +922,53 @@ export function Studio() {
           {exporting ? "Exporting…" : "Export"}
         </button>
       </nav>
-      <a
-        href="/distrokid-daily-streams.csv"
-        download="distrokid-daily-streams.csv"
-        className="mb-8 flex flex-col gap-3 rounded-2xl border border-line bg-cream px-5 py-4 sm:flex-row sm:items-center sm:justify-between"
-      >
-        <span>
-          <span className="block font-display text-2xl text-ink">Daily streams</span>
-          <span className="text-sm text-muted">16 Oct 2025 through 14 Oct 2026. 364 days.</span>
-        </span>
-        <span className="inline-flex h-12 items-center justify-center rounded-full bg-sienna px-5 font-medium text-cream">
-          Download CSV
-        </span>
-      </a>
+      <section className="mb-8 rounded-3xl border border-line bg-cream p-5 sm:p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-medium tracking-wide text-sienna">Download</p>
+            <h2 className="font-display text-3xl text-ink">Daily streams</h2>
+            <p className="mt-1 text-sm text-muted">16 Oct 2025 through 14 Oct 2026. 364 days.</p>
+          </div>
+          <a
+            href="/distrokid-daily-streams.csv"
+            download="distrokid-daily-streams.csv"
+            className="inline-flex h-12 items-center justify-center rounded-full bg-sienna px-5 font-medium text-cream"
+          >
+            Download CSV
+          </a>
+        </div>
+        <div className="mt-6 border-t border-line pt-5">
+          <h3 className="font-display text-2xl text-ink">Changelog</h3>
+          <ol className="mt-3 flex flex-col gap-3 text-sm text-ink">
+            <li>
+              <span className="font-medium">Live switcher.</span>{" "}
+              <span className="text-muted">Wide shows the whole table. Each name is a close-up. Click one while it plays to cut, then export that show as an MP4.</span>
+            </li>
+            <li>
+              <span className="font-medium">The table.</span>{" "}
+              <span className="text-muted">People sit behind one table. Turning someone off leaves them out of the video. Their mouth and seat are saved on the avatar.</span>
+            </li>
+            <li>
+              <span className="font-medium">Mouths.</span>{" "}
+              <span className="text-muted">Each person’s mouth pictures line up on their face, and each voice drives its own mouth.</span>
+            </li>
+          </ol>
+          <a
+            href="https://github.com/adamjyo/podcast-to-cartoon/actions"
+            className="mt-4 inline-flex h-11 items-center text-sm font-medium text-sienna"
+          >
+            Download the Mac app from GitHub
+          </a>
+        </div>
+      </section>
       <header className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-sm font-medium tracking-wide text-sienna">Paper Mic</p>
           <h1 className="font-display text-4xl text-balance text-ink sm:text-5xl">
-            Load headshots. Draw the cast.
+            The table
           </h1>
-          {(typeof window === "undefined" || window.location.port !== "47321") && (
-            <a
-              href="/paper-mic-mac.zip"
-              download="Paper-Mic-Mac.zip"
-              className="mt-4 inline-flex h-12 items-center rounded-full bg-ink px-5 font-medium text-cream"
-            >
-              Download the Mac app
-            </a>
-          )}
-          {(typeof window === "undefined" || window.location.port !== "47321") && (
-            <p className="mt-2 max-w-xl text-sm text-muted">
-              Unzip it, then right-click Paper Mic and choose Open the first time. After that, double-click it.
-            </p>
-          )}
           <p className="mt-2 max-w-xl text-pretty text-muted">
-            Drop a photo of each person. Paper Mic redraws them as an ink-and-watercolor avatar,
-            then cuts the six mouth shapes the cartoon needs to talk.
+            Turn people on or off, drag them into place, and play. Mouths follow each person’s audio.
           </p>
         </div>
         <button
@@ -874,165 +991,6 @@ export function Studio() {
           }}
         />
       </header>
-
-      <section id="mouths" className="jump-target mb-8">
-        <h2 className="font-display text-2xl text-ink">Mouth parts</h2>
-        <p className="mt-1 max-w-xl text-sm text-muted">
-          Drawn for these faces. Each shape is its own picture with a transparent background. Download the six for a person, then set them as that person’s mouth.
-        </p>
-        <div className="mt-4 flex flex-col gap-6">
-          {MOUTH_PEOPLE.map((person) => (
-            <div key={person.id}>
-              <h3 className="font-display text-xl text-ink">{person.label}</h3>
-              <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-                {MOUTH_SHAPES.map((shape) => (
-                  <article key={shape} className="overflow-hidden rounded-2xl border border-line bg-cream">
-                    <img loading="lazy"
-                      src={`/cast/mouth-parts/${person.id}/${shape}.png?v=3`}
-                      alt={`${person.label} ${shape} mouth`}
-                      className="aspect-[4/3] w-full cutout object-contain"
-                    />
-                    <a
-                      href={`/cast/mouth-parts/${person.id}/${shape}.png?v=3`}
-                      download={`${person.id}-${shape}.png`}
-                      target="_blank"
-                      rel="noopener"
-                      className="flex h-11 items-center justify-center text-sm font-medium text-sienna"
-                    >
-                      {shape}
-                    </a>
-                  </article>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section id="backgrounds" className="jump-target mb-8">
-        <h2 className="font-display text-2xl text-ink">Backgrounds</h2>
-        <div className="mt-3 grid gap-4 sm:grid-cols-2">
-          {[
-            { href: "/backgrounds/coffee-shop.jpg?v=2", file: "coffee-shop.jpg", label: "Coffee shop" },
-            { href: "/backgrounds/library.jpg?v=2", file: "library.jpg", label: "Library" },
-          ].map((item) => (
-            <article key={item.href} className="overflow-hidden rounded-3xl border border-line bg-cream">
-              <img loading="lazy" src={item.href} alt={item.label} className="aspect-video w-full object-cover" />
-              <div className="flex items-center justify-between gap-3 p-3">
-                <span className="text-sm font-medium text-ink">{item.label}</span>
-                <a href={item.href} download={item.file} target="_blank" rel="noopener" className="inline-flex h-11 items-center rounded-full bg-sienna px-4 text-sm font-medium text-cream">
-                  Download
-                </a>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section id="table" className="jump-target mb-8">
-        <h2 className="font-display text-2xl text-ink">At the table</h2>
-        <p className="mt-1 text-sm text-muted">Adam is with them. Each person and the table is its own layer.</p>
-        <article className="mt-3 overflow-hidden rounded-3xl border border-line bg-cream">
-          <img loading="lazy"
-            src="/cast/cast-at-the-table.png?v=6"
-            alt="Adam, Ben, Corey, Emily, Abby R, and Abby S sitting behind one table"
-            className="aspect-video w-full cutout object-contain"
-          />
-          <div className="flex items-center justify-between gap-3 p-3">
-            <span className="text-sm font-medium text-ink">All six, stacked</span>
-            <a
-              href="/cast/cast-at-the-table.png?v=6"
-              download="cast-at-the-table.png"
-              target="_blank"
-              rel="noopener"
-              className="inline-flex h-11 items-center rounded-full bg-sienna px-4 text-sm font-medium text-cream"
-            >
-              Download
-            </a>
-          </div>
-        </article>
-        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
-          {TABLE_LAYERS.map((layer) => (
-            <article key={layer.href} className="overflow-hidden rounded-2xl border border-line bg-cream">
-              <img loading="lazy" src={layer.href} alt={layer.label} className="aspect-square w-full cutout object-contain" />
-              <a
-                href={layer.href}
-                download={layer.file}
-                target="_blank"
-                rel="noopener"
-                className="flex h-11 items-center justify-center text-sm font-medium text-sienna"
-              >
-                {layer.label}
-              </a>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section id="lineup" className="jump-target mb-8">
-        <h2 className="font-display text-2xl text-ink">Lined up</h2>
-        <p className="mt-1 text-sm text-muted">Each person from the group shot, same size, ready to sit behind the table.</p>
-        <article className="mt-3 overflow-hidden rounded-3xl border border-line bg-cream">
-          <img loading="lazy" src="/cast/lineup/lined-up.png" alt="The cast lined up behind one table" className="aspect-video w-full cutout object-contain" />
-          <div className="flex items-center justify-between gap-3 p-3">
-            <span className="text-sm font-medium text-ink">All six in a line</span>
-            <a href="/cast/lineup/lined-up.png" download="lined-up.png" target="_blank" rel="noopener" className="inline-flex h-11 items-center rounded-full bg-sienna px-4 text-sm font-medium text-cream">
-              Download
-            </a>
-          </div>
-        </article>
-        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
-          {LINEUP.map((item) => (
-            <article key={item.href} className="overflow-hidden rounded-2xl border border-line bg-cream">
-              <img loading="lazy" src={item.href} alt={item.label} className="aspect-[3/4] w-full cutout object-contain" />
-              <a href={item.href} download={item.file} target="_blank" rel="noopener" className="flex h-11 items-center justify-center text-sm font-medium text-sienna">
-                {item.label}
-              </a>
-            </article>
-          ))}
-        </div>
-        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          {LINEUP_MOUTHS.map((item) => (
-            <article key={item.href} className="overflow-hidden rounded-2xl border border-line bg-cream">
-              <img loading="lazy" src={item.href} alt={item.label} className="aspect-[3/2] w-full cutout object-contain" />
-              <a href={item.href} download={item.file} target="_blank" rel="noopener" className="flex h-11 items-center justify-center text-sm font-medium text-sienna">
-                {item.label}
-              </a>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section id="portraits" className="jump-target mb-8 flex flex-col gap-8">
-        {CAST.map((person) => (
-          <div key={person.name}>
-            <h2 className="font-display text-2xl text-ink">{person.name}</h2>
-            <div className="mt-3 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              {person.sheets.map((sheet) => (
-                <article key={sheet.href} className="overflow-hidden rounded-3xl border border-line bg-cream">
-                  <img loading="lazy"
-                    src={sheet.href}
-                    alt={`${person.name} ${sheet.label}`}
-                    className="aspect-[3/4] w-full cutout object-contain"
-                  />
-                  <div className="flex items-center justify-between gap-3 p-3">
-                    <span className="text-sm font-medium text-ink">{sheet.label}</span>
-                    <a
-                      href={sheet.href}
-                      download={sheet.file}
-                      target="_blank"
-                      rel="noopener"
-                      className="inline-flex h-11 items-center rounded-full bg-sienna px-4 text-sm font-medium text-cream"
-                    >
-                      Download
-                    </a>
-                  </div>
-                </article>
-              ))}
-            </div>
-          </div>
-        ))}
-      </section>
 
       <div id="stage" className="jump-target">
         <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -1072,18 +1030,8 @@ export function Studio() {
             </button>
           ))}
         </div>
-        <canvas
-          ref={sceneRef}
-          width={SCENE_W}
-          height={SCENE_H}
-          onPointerDown={onSceneDown}
-          onPointerMove={onSceneMove}
-          onPointerUp={onSceneUp}
-          onPointerCancel={onSceneUp}
-          className="aspect-video w-full cursor-grab touch-none rounded-3xl bg-ink"
-        />
         <p className="mt-2 mb-6 text-sm text-muted">
-          Drag a person to move them. Drag their mouth to place it. Drag the orange corner to resize. Drag empty space to move the room.
+          The picture on the left is the scene. Use Foreground or Background under it to choose what you can move.
         </p>
       {seats.length === 0 ? (
         <button
@@ -1264,6 +1212,166 @@ export function Studio() {
         </div>
       )}
       </div>
+
+      <section id="mouths" className="jump-target mb-8">
+        <h2 className="font-display text-2xl text-ink">Mouth parts</h2>
+        <p className="mt-1 max-w-xl text-sm text-muted">
+          Drawn for these faces. Each shape is its own picture with a transparent background. Download the six for a person, then set them as that person’s mouth.
+        </p>
+        <div className="mt-4 flex flex-col gap-6">
+          {MOUTH_PEOPLE.map((person) => (
+            <div key={person.id}>
+              <h3 className="font-display text-xl text-ink">{person.label}</h3>
+              <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                {MOUTH_SHAPES.map((shape) => (
+                  <article key={shape} className="overflow-hidden rounded-2xl border border-line bg-cream">
+                    <img loading="lazy"
+                      src={`/cast/mouth-parts/${person.id}/${shape}.png?v=3`}
+                      alt={`${person.label} ${shape} mouth`}
+                      className="aspect-[4/3] w-full cutout object-contain"
+                    />
+                    <a
+                      href={`/cast/mouth-parts/${person.id}/${shape}.png?v=3`}
+                      download={`${person.id}-${shape}.png`}
+                      target="_blank"
+                      rel="noopener"
+                      className="flex h-11 items-center justify-center text-sm font-medium text-sienna"
+                    >
+                      {shape}
+                    </a>
+                  </article>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section id="backgrounds" className="jump-target mb-8">
+        <h2 className="font-display text-2xl text-ink">Backgrounds</h2>
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
+          {[
+            { href: "/backgrounds/coffee-shop.jpg?v=2", file: "coffee-shop.jpg", label: "Coffee shop" },
+            { href: "/backgrounds/library.jpg?v=2", file: "library.jpg", label: "Library" },
+          ].map((item) => (
+            <article key={item.href} className="overflow-hidden rounded-3xl border border-line bg-cream">
+              <img loading="lazy" src={item.href} alt={item.label} className="aspect-video w-full object-cover" />
+              <div className="flex items-center justify-between gap-3 p-3">
+                <span className="text-sm font-medium text-ink">{item.label}</span>
+                <a href={item.href} download={item.file} target="_blank" rel="noopener" className="inline-flex h-11 items-center rounded-full bg-sienna px-4 text-sm font-medium text-cream">
+                  Download
+                </a>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section id="table" className="jump-target mb-8">
+        <h2 className="font-display text-2xl text-ink">At the table</h2>
+        <p className="mt-1 text-sm text-muted">Adam is with them. Each person and the table is its own layer.</p>
+        <article className="mt-3 overflow-hidden rounded-3xl border border-line bg-cream">
+          <img loading="lazy"
+            src="/cast/cast-at-the-table.png?v=6"
+            alt="Adam, Ben, Corey, Emily, Abby R, and Abby S sitting behind one table"
+            className="aspect-video w-full cutout object-contain"
+          />
+          <div className="flex items-center justify-between gap-3 p-3">
+            <span className="text-sm font-medium text-ink">All six, stacked</span>
+            <a
+              href="/cast/cast-at-the-table.png?v=6"
+              download="cast-at-the-table.png"
+              target="_blank"
+              rel="noopener"
+              className="inline-flex h-11 items-center rounded-full bg-sienna px-4 text-sm font-medium text-cream"
+            >
+              Download
+            </a>
+          </div>
+        </article>
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
+          {TABLE_LAYERS.map((layer) => (
+            <article key={layer.href} className="overflow-hidden rounded-2xl border border-line bg-cream">
+              <img loading="lazy" src={layer.href} alt={layer.label} className="aspect-square w-full cutout object-contain" />
+              <a
+                href={layer.href}
+                download={layer.file}
+                target="_blank"
+                rel="noopener"
+                className="flex h-11 items-center justify-center text-sm font-medium text-sienna"
+              >
+                {layer.label}
+              </a>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section id="lineup" className="jump-target mb-8">
+        <h2 className="font-display text-2xl text-ink">Lined up</h2>
+        <p className="mt-1 text-sm text-muted">Each person from the group shot, same size, ready to sit behind the table.</p>
+        <article className="mt-3 overflow-hidden rounded-3xl border border-line bg-cream">
+          <img loading="lazy" src="/cast/lineup/lined-up.png" alt="The cast lined up behind one table" className="aspect-video w-full cutout object-contain" />
+          <div className="flex items-center justify-between gap-3 p-3">
+            <span className="text-sm font-medium text-ink">All six in a line</span>
+            <a href="/cast/lineup/lined-up.png" download="lined-up.png" target="_blank" rel="noopener" className="inline-flex h-11 items-center rounded-full bg-sienna px-4 text-sm font-medium text-cream">
+              Download
+            </a>
+          </div>
+        </article>
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
+          {LINEUP.map((item) => (
+            <article key={item.href} className="overflow-hidden rounded-2xl border border-line bg-cream">
+              <img loading="lazy" src={item.href} alt={item.label} className="aspect-[3/4] w-full cutout object-contain" />
+              <a href={item.href} download={item.file} target="_blank" rel="noopener" className="flex h-11 items-center justify-center text-sm font-medium text-sienna">
+                {item.label}
+              </a>
+            </article>
+          ))}
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          {LINEUP_MOUTHS.map((item) => (
+            <article key={item.href} className="overflow-hidden rounded-2xl border border-line bg-cream">
+              <img loading="lazy" src={item.href} alt={item.label} className="aspect-[3/2] w-full cutout object-contain" />
+              <a href={item.href} download={item.file} target="_blank" rel="noopener" className="flex h-11 items-center justify-center text-sm font-medium text-sienna">
+                {item.label}
+              </a>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section id="portraits" className="jump-target mb-8 flex flex-col gap-8">
+        {CAST.map((person) => (
+          <div key={person.name}>
+            <h2 className="font-display text-2xl text-ink">{person.name}</h2>
+            <div className="mt-3 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              {person.sheets.map((sheet) => (
+                <article key={sheet.href} className="overflow-hidden rounded-3xl border border-line bg-cream">
+                  <img loading="lazy"
+                    src={sheet.href}
+                    alt={`${person.name} ${sheet.label}`}
+                    className="aspect-[3/4] w-full cutout object-contain"
+                  />
+                  <div className="flex items-center justify-between gap-3 p-3">
+                    <span className="text-sm font-medium text-ink">{sheet.label}</span>
+                    <a
+                      href={sheet.href}
+                      download={sheet.file}
+                      target="_blank"
+                      rel="noopener"
+                      className="inline-flex h-11 items-center rounded-full bg-sienna px-4 text-sm font-medium text-cream"
+                    >
+                      Download
+                    </a>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
+        ))}
+      </section>
+
       {(library.length > 0 || libraryError) && (
         <section className="mt-8">
           <h2 className="font-display text-2xl text-ink">Saved cast</h2>
@@ -1299,7 +1407,7 @@ export function Studio() {
           />
         ) : null,
       )}
-      <div className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-paper px-4 py-3">
+      <div className="mt-6 border-t border-line bg-paper py-3">
         <div className="mx-auto flex max-w-6xl flex-col gap-3">
           {clipUrl && (
             <video src={clipUrl} controls playsInline className="max-h-40 w-full rounded-xl bg-ink" />
@@ -1346,5 +1454,7 @@ export function Studio() {
         </div>
       </div>
     </main>
+      </aside>
+    </div>
   );
 }

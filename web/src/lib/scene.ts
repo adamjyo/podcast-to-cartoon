@@ -83,7 +83,7 @@ export type Spot = {
 
 export type HitBox = {
   id: string;
-  kind: "person" | "mouth" | "background";
+  kind: "person" | "mouth" | "background" | "foreground";
   role: "body" | "handle";
   x: number;
   y: number;
@@ -134,7 +134,6 @@ function strokeBox(
 export function paintTable(
   ctx: CanvasRenderingContext2D,
   background: HTMLImageElement,
-  table: HTMLImageElement,
   people: {
     person: ScenePerson;
     body: HTMLImageElement;
@@ -144,6 +143,8 @@ export function paintTable(
   }[],
   room: { x: number; y: number; scale: number },
   selected: { id: string; kind: HitBox["kind"] } | null,
+  editLayer: "background" | "foreground",
+  foreground: { image: HTMLImageElement; place: { x: number; y: number; scale: number } } | null,
 ): HitBox[] {
   const w = ctx.canvas.width;
   const h = ctx.canvas.height;
@@ -197,27 +198,27 @@ export function paintTable(
     });
   }
 
-  const tableH = h * 0.4;
-  const tableW = w * 1.04;
-  ctx.drawImage(
-    keyedImage(table, Math.round(tableW), Math.round(tableH)),
-    (w - tableW) / 2,
-    h - tableH * 0.92,
-    tableW,
-    tableH,
-  );
-
-  if (selected?.kind === "background") {
-    strokeBox(ctx, { x: 12, y: 12, w: w - 24, h: h - 24 }, "background", "background", boxes);
+  let foregroundBox: { x: number; y: number; w: number; h: number } | null = null;
+  if (foreground) {
+    const fh = h * (foreground.place.scale / 100);
+    const fw = foreground.image.width * (fh / Math.max(1, foreground.image.height));
+    const fx = (foreground.place.x / 100) * w - fw / 2;
+    const fy = (foreground.place.y / 100) * h - fh / 2;
+    ctx.drawImage(keyedImage(foreground.image, Math.round(fw), Math.round(fh)), fx, fy, fw, fh);
+    foregroundBox = { x: fx, y: fy, w: fw, h: fh };
   }
-  for (const item of placed) {
-    if (selected?.id === item.entry.person.id && selected.kind === "person") {
-      strokeBox(ctx, { x: item.dx, y: item.dy, w: item.dw, h: item.dh }, item.entry.person.id, "person", boxes);
+
+  if (editLayer === "background") {
+    if (selected?.kind === "background") {
+      strokeBox(ctx, { x: 12, y: 12, w: w - 24, h: h - 24 }, "background", "background", boxes);
     }
-    if (selected?.id === item.entry.person.id && selected.kind === "mouth") {
-      const mouth = boxes.find((box) => box.id === item.entry.person.id && box.kind === "mouth");
-      if (mouth) strokeBox(ctx, mouth, item.entry.person.id, "mouth", boxes);
+    boxes.push({ id: "background", kind: "background", role: "body", x: 0, y: 0, w, h });
+  }
+  if (editLayer === "foreground" && foregroundBox) {
+    if (selected?.kind === "foreground") {
+      strokeBox(ctx, foregroundBox, "foreground", "foreground", boxes);
     }
+    boxes.push({ id: "foreground", kind: "foreground", role: "body", ...foregroundBox });
   }
   return boxes;
 }

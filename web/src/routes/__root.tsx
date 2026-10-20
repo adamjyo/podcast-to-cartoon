@@ -31,7 +31,19 @@ export const Route = createRootRoute({
       <body>
         <PreviewHostBridge />
         <AuthProvider>
-          <Outlet />
+          <div
+            id="app-scroll"
+            style={{
+              position: "fixed",
+              inset: 0,
+              overflowY: "hidden",
+              overflowX: "hidden",
+              WebkitOverflowScrolling: "touch",
+              zIndex: 1,
+            }}
+          >
+            <Outlet />
+          </div>
         </AuthProvider>
         <Scripts />
       </body>
