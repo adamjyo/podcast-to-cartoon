@@ -1,0 +1,39 @@
+name: Native Mac app
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "native/**"
+      - ".github/workflows/build-native.yml"
+
+jobs:
+  app:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the app
+        run: |
+          xcodebuild \
+            -project native/PodcastProcessor.xcodeproj \
+            -scheme PodcastProcessor \
+            -destination "platform=macOS" \
+            -configuration Release \
+            -derivedDataPath "$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            build
+          test -d "$PWD/build/Build/Products/Release/PodcastProcessor.app"
+
+      - name: Pack the app
+        run: ditto -c -k --keepParent "$PWD/build/Build/Products/Release/PodcastProcessor.app" PodcastProcessor.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PodcastProcessor
+          path: PodcastProcessor.zip
