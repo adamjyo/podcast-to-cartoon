@@ -32,3 +32,8 @@ npm run dev
 ```
 
 `web/vite.mac.config.ts` builds the small double-click Mac wrapper in `web/mac`. The full Mac app is still the Python app from Actions.
+
+## Native app for Mac and iPad
+
+Open `native/PodcastProcessor.xcodeproj` in Xcode. Run it on My Mac or on an iPad. This one is a SwiftUI app, not the website and not the older Python app.
+
