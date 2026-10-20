@@ -1,6 +1,6 @@
 # Podcast Processor
 
-Native app for Mac and iPad. It is a SwiftUI app, not a website inside a window.
+This is the app. It is native SwiftUI for Mac and iPad, and it will not become a web app. Keep building in this Xcode project only.
 
 1. Open `PodcastProcessor.xcodeproj` in Xcode.
 2. For the Mac, choose **My Mac** and press Run.
