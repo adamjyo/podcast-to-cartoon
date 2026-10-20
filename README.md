@@ -1,8 +1,6 @@
 # Podcast to Cartoon
 
-The app is Podcast Processor for Mac and iPad. Download the built Mac app from the latest [Native Mac app](https://github.com/adamjyo/podcast-to-cartoon/actions/workflows/build-native.yml) run. Unzip it and open `PodcastProcessor.app`. The first time, right-click and choose Open.
-
-Putting it on an iPad needs your Apple ID, because Apple will not install an unsigned iPad app. The source for both is `native/PodcastProcessor.xcodeproj`. Do not add features to the website.
+Open the Xcode project: `native/PodcastProcessor.xcodeproj`. It is a Mac and iPad app. In Xcode, choose My Mac or an iPad and press Run. Do not add features to the website.
 
 The Episode tab is a 16:9 table and a live switcher. Wide shows the whole table. Each name is a close-up. Click one while the episode plays to cut, then Export switched MP4 writes that show. Drag a person, their mouth, or the room. Uncheck On to leave someone out. Mouth placement and where they sit are saved on that avatar.
 
