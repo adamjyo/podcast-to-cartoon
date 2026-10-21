@@ -638,7 +638,7 @@ final class EditorModel {
             if let audio, audioFrames < audioTotal, audio.isReadyForMoreMediaData, audioTime <= videoTime + 0.3 || videoIndex >= frames {
                 let count = min(Int64(sampleRate / Double(fps)), audioTotal - audioFrames)
                 let chunk = mixChunk(pumps, frames: AVAudioFrameCount(count))
-                guard let sample = sampleBuffer(from: chunk, frameOffset: AVAudioFrameCount(audioFrames)) else {
+                guard let sample = sampleBuffer(from: chunk, frameOffset: audioFrames) else {
                     throw ExportFailure("Could not prepare the sound.")
                 }
                 if !audio.append(sample) {
@@ -707,20 +707,8 @@ final class EditorModel {
         return mix
     }
 
-    private func sampleBuffer(from buffer: AVAudioPCMBuffer, frameOffset: AVAudioFrameCount) -> CMSampleBuffer? {
-        guard let packed = packedInt16(buffer) else { return nil }
-        var description: CMAudioFormatDescription?
-        var stream = packed.format.streamDescription.pointee
-        guard CMAudioFormatDescriptionCreate(
-            allocator: kCFAllocatorDefault,
-            asbd: &stream,
-            layoutSize: 0,
-            layout: nil,
-            magicCookieSize: 0,
-            magicCookie: nil,
-            extensions: nil,
-            formatDescriptionOut: &description
-        ) == noErr, let description else { return nil }
+    private func sampleBuffer(from buffer: AVAudioPCMBuffer, frameOffset: Int64) -> CMSampleBuffer? {
+        guard let packed = packedInt16(buffer), packed.frameLength > 0 else { return nil }
         let scale = CMTimeScale(44_100)
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: CMTimeValue(packed.frameLength), timescale: scale),
@@ -734,7 +722,7 @@ final class EditorModel {
             dataReady: false,
             makeDataReadyCallback: nil,
             refcon: nil,
-            formatDescription: description,
+            formatDescription: packed.format.formatDescription,
             sampleCount: CMItemCount(packed.frameLength),
             sampleTimingEntryCount: 1,
             sampleTimingArray: &timing,
@@ -746,24 +734,28 @@ final class EditorModel {
             sample,
             blockBufferAllocator: kCFAllocatorDefault,
             blockBufferMemoryAllocator: kCFAllocatorDefault,
-            flags: 0,
+            flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
             bufferList: packed.audioBufferList
         ) == noErr else { return nil }
         return sample
     }
 
     private func packedInt16(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        guard let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 44100, channels: 2, interleaved: true),
+        guard buffer.frameLength > 0,
+              let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 44100, channels: 2, interleaved: true),
               let packed = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: buffer.frameLength),
               let left = buffer.floatChannelData?[0],
-              let right = buffer.floatChannelData?[1],
-              let dest = packed.int16ChannelData?[0] else { return nil }
+              let right = buffer.floatChannelData?[1] else { return nil }
         packed.frameLength = buffer.frameLength
+        let channels = UnsafeMutableAudioBufferListPointer(packed.mutableAudioBufferList)
+        guard let raw = channels.first?.mData else { return nil }
+        let dest = raw.bindMemory(to: Int16.self, capacity: Int(buffer.frameLength) * 2)
         let count = Int(buffer.frameLength)
         for index in 0..<count {
             dest[index * 2] = Int16(max(-1, min(1, left[index])) * 32767)
             dest[index * 2 + 1] = Int16(max(-1, min(1, right[index])) * 32767)
         }
+        channels[0].mDataByteSize = UInt32(count * MemoryLayout<Int16>.size * 2)
         return packed
     }
 
