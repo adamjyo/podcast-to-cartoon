@@ -518,6 +518,7 @@ final class EditorModel {
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
+        let mix = try mixedAudio()
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264,
@@ -531,11 +532,24 @@ final class EditorModel {
             kCVPixelBufferHeightKey as String: 720,
         ])
         writer.add(input)
+        var audioInput: AVAssetWriterInput?
+        if mix != nil {
+            let audio = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 44100,
+                AVNumberOfChannelsKey: 2,
+                AVEncoderBitRateKey: 160_000,
+            ])
+            audio.expectsMediaDataInRealTime = false
+            writer.add(audio)
+            audioInput = audio
+        }
         guard writer.startWriting() else { throw writer.error ?? CocoaError(.fileWriteUnknown) }
         writer.startSession(atSourceTime: .zero)
         let fps = 12
-        let longest = people.filter(\.isOn).map { Double($0.levels.count) * 0.08 }.max() ?? 0
-        let duration = longest > 0.2 ? longest : 4
+        let levelDuration = people.filter(\.isOn).map { Double($0.levels.count) * 0.08 }.max() ?? 0
+        let audioDuration = mix.map { Double($0.frameLength) / $0.format.sampleRate } ?? 0
+        let duration = max(audioDuration, levelDuration) > 0.2 ? max(audioDuration, levelDuration) : 4
         let frames = max(1, Int(duration * Double(fps)))
         var lastPercent = -1
         for index in 0..<frames {
@@ -548,19 +562,153 @@ final class EditorModel {
             if !adaptor.append(buffer, withPresentationTime: time) {
                 throw writer.error ?? CocoaError(.fileWriteUnknown)
             }
-            let percent = Int(Double(index + 1) / Double(frames) * 100)
+            let percent = Int(Double(index + 1) / Double(frames) * 90)
             if percent != lastPercent {
                 lastPercent = percent
                 DispatchQueue.main.async { self.exportProgress = Double(percent) / 100 }
             }
         }
         input.markAsFinished()
+        if let mix, let audioInput {
+            try append(mix, to: audioInput)
+            audioInput.markAsFinished()
+            DispatchQueue.main.async { self.exportProgress = 1 }
+        }
         let wait = DispatchSemaphore(value: 0)
         writer.finishWriting { wait.signal() }
         wait.wait()
         if writer.status != .completed {
             throw writer.error ?? CocoaError(.fileWriteUnknown)
         }
+    }
+
+    private func mixedAudio() throws -> AVAudioPCMBuffer? {
+        let urls = people.filter { $0.isOn && $0.audioURL != nil }.compactMap(\.audioURL)
+        guard !urls.isEmpty else { return nil }
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else { return nil }
+        var decoded: [AVAudioPCMBuffer] = []
+        for url in urls {
+            if let buffer = try decodeAudio(url, to: format) {
+                decoded.append(buffer)
+            }
+        }
+        guard let longest = decoded.max(by: { $0.frameLength < $1.frameLength }),
+              let mix = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: longest.frameLength) else { return nil }
+        mix.frameLength = longest.frameLength
+        let frames = Int(mix.frameLength)
+        for channel in 0..<Int(format.channelCount) {
+            guard let dest = mix.floatChannelData?[channel] else { continue }
+            for index in 0..<frames { dest[index] = 0 }
+            for buffer in decoded {
+                let sourceChannel = min(channel, Int(buffer.format.channelCount) - 1)
+                guard let source = buffer.floatChannelData?[sourceChannel] else { continue }
+                let count = min(frames, Int(buffer.frameLength))
+                for index in 0..<count { dest[index] += source[index] }
+            }
+            var peak: Float = 0
+            for index in 0..<frames { peak = max(peak, abs(dest[index])) }
+            if peak > 0.98 {
+                let gain = 0.98 / peak
+                for index in 0..<frames { dest[index] *= gain }
+            }
+        }
+        return mix
+    }
+
+    private func decodeAudio(_ url: URL, to format: AVAudioFormat) throws -> AVAudioPCMBuffer? {
+        let file = try AVAudioFile(forReading: url)
+        let sourceFormat = file.processingFormat
+        let frameCount = AVAudioFrameCount(file.length)
+        guard frameCount > 0, let source = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: frameCount) else { return nil }
+        try file.read(into: source)
+        if sourceFormat.sampleRate == format.sampleRate && sourceFormat.channelCount == format.channelCount {
+            return source
+        }
+        guard let converter = AVAudioConverter(from: sourceFormat, to: format) else { return nil }
+        let capacity = AVAudioFrameCount(ceil(Double(source.frameLength) * format.sampleRate / sourceFormat.sampleRate)) + 64
+        guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return nil }
+        var didSend = false
+        var error: NSError?
+        converter.convert(to: output, error: &error) { _, status in
+            if didSend {
+                status.pointee = .endOfStream
+                return nil
+            }
+            didSend = true
+            status.pointee = .haveData
+            return source
+        }
+        if let error { throw error }
+        return output.frameLength > 0 ? output : nil
+    }
+
+    private func append(_ buffer: AVAudioPCMBuffer, to input: AVAssetWriterInput) throws {
+        let framesPerChunk = AVAudioFrameCount(buffer.format.sampleRate)
+        var offset: AVAudioFrameCount = 0
+        while offset < buffer.frameLength {
+            while !input.isReadyForMoreMediaData {
+                Thread.sleep(forTimeInterval: 0.002)
+            }
+            let count = min(framesPerChunk, buffer.frameLength - offset)
+            guard let chunk = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: count) else { break }
+            chunk.frameLength = count
+            for channel in 0..<Int(buffer.format.channelCount) {
+                guard let source = buffer.floatChannelData?[channel], let dest = chunk.floatChannelData?[channel] else { continue }
+                dest.update(from: source.advanced(by: Int(offset)), count: Int(count))
+            }
+            guard let sample = sampleBuffer(from: chunk, frameOffset: offset) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            if !input.append(sample) {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            offset += count
+        }
+    }
+
+    private func sampleBuffer(from buffer: AVAudioPCMBuffer, frameOffset: AVAudioFrameCount) -> CMSampleBuffer? {
+        let format = buffer.format
+        var description: CMAudioFormatDescription?
+        var stream = format.streamDescription.pointee
+        guard CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            asbd: &stream,
+            layoutSize: 0,
+            layout: nil,
+            magicCookieSize: 0,
+            magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &description
+        ) == noErr, let description else { return nil }
+        let scale = CMTimeScale(Int32(format.sampleRate))
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: CMTimeValue(buffer.frameLength), timescale: scale),
+            presentationTimeStamp: CMTime(value: CMTimeValue(frameOffset), timescale: scale),
+            decodeTimeStamp: .invalid
+        )
+        var sample: CMSampleBuffer?
+        guard CMSampleBufferCreate(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: nil,
+            dataReady: false,
+            makeDataReadyCallback: nil,
+            refcon: nil,
+            formatDescription: description,
+            sampleCount: CMItemCount(buffer.frameLength),
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0,
+            sampleSizeArray: nil,
+            sampleBufferOut: &sample
+        ) == noErr, let sample else { return nil }
+        guard CMSampleBufferSetDataBufferFromAudioBufferList(
+            sample,
+            blockBufferAllocator: kCFAllocatorDefault,
+            blockBufferMemoryAllocator: kCFAllocatorDefault,
+            flags: 0,
+            bufferList: buffer.audioBufferList
+        ) == noErr else { return nil }
+        return sample
     }
 
     private func setSubject(_ subject: DragSubject, x: Double, y: Double, scale: Double) {

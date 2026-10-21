@@ -349,10 +349,12 @@ struct ContentView: View {
             defer { if allowed { url.stopAccessingSecurityScopedResource() } }
             do {
                 try model.writeMovie(to: url)
+                let named = url.lastPathComponent
+                let heard = model.people.contains { $0.isOn && $0.audioURL != nil }
                 DispatchQueue.main.async {
                     model.exportProgress = nil
                     busy = false
-                    model.note = "Saved \(url.lastPathComponent)"
+                    model.note = heard ? "Saved \(named) with audio." : "Saved \(named). Load audio to include sound."
                 }
             } catch {
                 DispatchQueue.main.async {
