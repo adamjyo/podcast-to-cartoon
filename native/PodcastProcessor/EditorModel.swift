@@ -90,12 +90,12 @@ final class EditorModel {
             ("abby-s", "Abby S"),
         ]
         let places: [String: (Double, Double, Double)] = [
-            "adam": (51.59, 28.76, 21.66),
-            "ben": (51.77, 22.37, 21.80),
-            "corey": (52.08, 43.40, 17.36),
-            "emily": (51.09, 28.23, 21.90),
-            "abby-r": (49.84, 27.08, 27.78),
-            "abby-s": (51.41, 31.54, 14.69),
+            "adam": (51.46, 29.91, 13.76),
+            "ben": (50.95, 24.14, 11.72),
+            "corey": (52.08, 44.68, 11.28),
+            "emily": (50.80, 29.14, 11.68),
+            "abby-r": (50.00, 28.45, 14.54),
+            "abby-s": (50.40, 31.08, 9.04),
         ]
         people = names.enumerated().compactMap { index, pair in
             let (id, name) = pair
@@ -610,12 +610,12 @@ final class EditorModel {
             SavedFace(id: $0.id, x: $0.x, y: $0.y, scale: $0.scale, mouthX: $0.mouthX, mouthY: $0.mouthY, mouthScale: $0.mouthScale)
         }
         guard let data = try? JSONEncoder().encode(faces) else { return }
-        UserDefaults.standard.set(data, forKey: "saved-faces-v2")
+        UserDefaults.standard.set(data, forKey: "saved-faces-v3")
         note = "Face positions saved. The next project will start lined up."
     }
 
     private func restoreFaces() {
-        guard let data = UserDefaults.standard.data(forKey: "saved-faces-v2"),
+        guard let data = UserDefaults.standard.data(forKey: "saved-faces-v3"),
               let faces = try? JSONDecoder().decode([SavedFace].self, from: data) else { return }
         for face in faces {
             guard let index = people.firstIndex(where: { $0.id == face.id }) else { continue }
