@@ -122,7 +122,17 @@ struct ContentView: View {
                         )
                         model.drag(to: scenePoint)
                     }
-                    .onEnded { _ in model.endDrag() }
+                    .onEnded { value in
+                        let local = CGPoint(
+                            x: value.location.x - (geo.size.width - fit.width) / 2,
+                            y: value.location.y - (geo.size.height - fit.height) / 2
+                        )
+                        let scenePoint = CGPoint(
+                            x: local.x / fit.width * EditorModel.scene.width,
+                            y: local.y / fit.height * EditorModel.scene.height
+                        )
+                        model.finishDrag(at: scenePoint)
+                    }
             )
         }
     }
@@ -137,7 +147,7 @@ struct ContentView: View {
                      ? "Foreground is on. Only that layer can be moved."
                      : model.editBackground
                      ? "Background is on. Drag the picture. Drag the orange corner to resize."
-                     : "Both layers are off. Drag a mouth to line it up. Drag its orange corner to resize it. Drag a person to move them.")
+                     : "Both layers are off. Double-click a mouth to move it inside that person. Double-click it again to lock it.")
                     .font(.subheadline)
                     .foregroundStyle(Color.ink.opacity(0.75))
                 ForEach(model.people) { person in

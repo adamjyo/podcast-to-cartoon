@@ -57,6 +57,7 @@ final class EditorModel {
     var editBackground = false
     var selectedPersonID: String?
     var selectedIsMouth = false
+    var unlockedMouthID: String?
     var time: TimeInterval = 0
     var note: String?
     private var players: [String: AVAudioPlayer] = [:]
@@ -65,6 +66,8 @@ final class EditorModel {
     private var dragOrigin: (x: Double, y: Double, scale: Double)?
     private var dragSubject: DragSubject?
     private var resizing = false
+    private var clickMouthID: String?
+    private var lastMouthClick: (id: String, time: Date)?
 
     private enum DragSubject {
         case foreground
@@ -205,11 +208,14 @@ final class EditorModel {
             let corner = handle(for: mouth, size: 16)
             if corner.contains(point) || mouth.contains(point) {
                 selectedPersonID = person.id
-                selectedIsMouth = true
-                resizing = corner.contains(point)
-                dragSubject = .mouth(person.id)
+                clickMouthID = person.id
                 dragStart = point
-                dragOrigin = (person.mouthX, person.mouthY, person.mouthScale)
+                if unlockedMouthID == person.id {
+                    selectedIsMouth = true
+                    resizing = corner.contains(point)
+                    dragSubject = .mouth(person.id)
+                    dragOrigin = (person.mouthX, person.mouthY, person.mouthScale)
+                }
                 return
             }
         }
@@ -263,6 +269,30 @@ final class EditorModel {
         dragOrigin = nil
         dragSubject = nil
         resizing = false
+        clickMouthID = nil
+    }
+
+    func finishDrag(at point: CGPoint) {
+        let moved = dragStart.map { hypot($0.x - point.x, $0.y - point.y) } ?? 999
+        let mouthID = clickMouthID
+        endDrag()
+        guard moved < 40, let mouthID else { return }
+        let now = Date()
+        if let last = lastMouthClick, last.id == mouthID, now.timeIntervalSince(last.time) < 0.45 {
+            if unlockedMouthID == mouthID {
+                unlockedMouthID = nil
+                selectedIsMouth = false
+                note = "Mouth locked."
+            } else {
+                unlockedMouthID = mouthID
+                selectedPersonID = mouthID
+                selectedIsMouth = true
+                note = "Drag this mouth inside the person. Double-click it again to lock it."
+            }
+            lastMouthClick = nil
+        } else {
+            lastMouthClick = (id: mouthID, time: now)
+        }
     }
 
     func frame(at time: TimeInterval) -> CGImage? {
@@ -294,7 +324,7 @@ final class EditorModel {
                 if let mouth = person.mouths[shape] ?? person.mouths["closed"] {
                     ctx.draw(mouth, in: placed(lips))
                 }
-                if !editForeground && !editBackground {
+                if !editForeground && !editBackground && unlockedMouthID == person.id {
                     let selected = person.id == selectedPersonID && selectedIsMouth
                     ctx.setStrokeColor(CGColor(srgbRed: 0.77, green: 0.36, blue: 0.15, alpha: 1))
                     ctx.setLineWidth(selected ? 4 : 2)
@@ -509,9 +539,22 @@ final class EditorModel {
 
     private func setMouth(_ id: String, x: Double, y: Double, scale: Double) {
         guard let index = people.firstIndex(where: { $0.id == id }) else { return }
-        people[index].mouthX = x
-        people[index].mouthY = y
-        people[index].mouthScale = scale
+        var next = people[index]
+        next.mouthScale = min(80, max(4, scale))
+        next.mouthX = x
+        next.mouthY = y
+        let shape = mouthShape(next, time)
+        guard let mouth = next.mouths[shape] ?? next.mouths["closed"] else { return }
+        let body = bodyRect(next)
+        let mw = body.width * CGFloat(next.mouthScale / 100)
+        let mh = mw * CGFloat(mouth.height) / CGFloat(max(1, mouth.width))
+        let halfX = Double(mw / 2 / max(body.width, 1)) * 100
+        let halfY = Double(mh / 2 / max(body.height, 1)) * 100
+        next.mouthX = halfX < 50 ? min(100 - halfX, max(halfX, next.mouthX)) : 50
+        next.mouthY = halfY < 50 ? min(100 - halfY, max(halfY, next.mouthY)) : 50
+        people[index].mouthX = next.mouthX
+        people[index].mouthY = next.mouthY
+        people[index].mouthScale = next.mouthScale
     }
 
     private func mouthRect(_ person: PersonItem, shape: String) -> CGRect? {
