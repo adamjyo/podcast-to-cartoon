@@ -1,5 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
+#if os(macOS)
+import AppKit
+#endif
 
 struct ContentView: View {
     @State private var model = EditorModel()
@@ -58,8 +61,10 @@ struct ContentView: View {
                 model.loadAudio(from: url, personID: personID)
             }
         }
+        #if os(iOS)
         .fileExporter(isPresented: $showPNG, document: pngFile, contentType: .png, defaultFilename: "scene.png") { _ in }
         .fileExporter(isPresented: $showMovie, document: movieFile, contentType: .mpeg4Movie, defaultFilename: "scene.mp4") { _ in }
+        #endif
         .task(id: playing) {
             guard playing else {
                 model.stopAudio()
@@ -316,15 +321,48 @@ struct ContentView: View {
     }
 
     private func exportPNG() {
+        #if os(macOS)
+        guard let url = savePanel(filename: "scene.png", type: .png) else { return }
+        guard let data = model.pngData() else {
+            model.note = "Could not draw the scene."
+            return
+        }
+        write(data, to: url)
+        #else
         guard let data = model.pngData() else {
             model.note = "Could not draw the scene."
             return
         }
         pngFile = PNGFile(data: data)
         showPNG = true
+        #endif
     }
 
     private func exportMovie() {
+        #if os(macOS)
+        guard let url = savePanel(filename: "scene.mp4", type: .mpeg4Movie) else { return }
+        let allowed = url.startAccessingSecurityScopedResource()
+        busy = true
+        model.exportProgress = 0
+        let model = model
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { if allowed { url.stopAccessingSecurityScopedResource() } }
+            do {
+                try model.writeMovie(to: url)
+                DispatchQueue.main.async {
+                    model.exportProgress = nil
+                    busy = false
+                    model.note = "Saved \(url.lastPathComponent)"
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    model.note = error.localizedDescription
+                    model.exportProgress = nil
+                    busy = false
+                }
+            }
+        }
+        #else
         busy = true
         model.exportProgress = 0
         let model = model
@@ -346,7 +384,32 @@ struct ContentView: View {
                 }
             }
         }
+        #endif
     }
+
+    #if os(macOS)
+    private func savePanel(filename: String, type: UTType) -> URL? {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [type]
+        panel.nameFieldStringValue = filename
+        panel.canCreateDirectories = true
+        panel.title = "Save As"
+        panel.prompt = "Save"
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
+
+    private func write(_ data: Data, to url: URL) {
+        let allowed = url.startAccessingSecurityScopedResource()
+        defer { if allowed { url.stopAccessingSecurityScopedResource() } }
+        do {
+            try data.write(to: url, options: .atomic)
+            model.note = "Saved \(url.lastPathComponent)"
+        } catch {
+            model.note = error.localizedDescription
+        }
+    }
+    #endif
 }
 
 private extension Color {
