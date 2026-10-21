@@ -585,6 +585,7 @@ final class EditorModel {
         defer { if let mixURL { try? FileManager.default.removeItem(at: mixURL) } }
         guard let mixURL else {
             try writeVideo(to: url, duration: duration, progressStart: 0.02, progressEnd: 1)
+            try requireMovieBytes(at: url)
             return
         }
         let pictureURL = FileManager.default.temporaryDirectory.appendingPathComponent("podcast-picture-\(UUID().uuidString).mp4")
@@ -594,8 +595,11 @@ final class EditorModel {
             try? FileManager.default.removeItem(at: soundURL)
         }
         try writeVideo(to: pictureURL, duration: duration, progressStart: 0.15, progressEnd: 0.8)
+        try requireMovieBytes(at: pictureURL)
         try writeCompressedAudio(from: mixURL, to: soundURL)
+        try requireMovieBytes(at: soundURL)
         try join(video: pictureURL, audio: soundURL, to: url)
+        try requireMovieBytes(at: url)
     }
 
     private func writeVideo(to url: URL, duration: Double, progressStart: Double, progressEnd: Double) throws {
@@ -708,6 +712,10 @@ final class EditorModel {
               let soundTrack = sound.tracks(withMediaType: .audio).first else {
             throw ExportFailure("The picture or the sound could not be opened.")
         }
+        guard picture.duration.isValid, picture.duration.seconds > 0.05,
+              sound.duration.isValid, sound.duration.seconds > 0.05 else {
+            throw ExportFailure("The picture or the sound came out empty.")
+        }
         let composition = AVMutableComposition()
         guard let videoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid),
               let audioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
@@ -720,11 +728,20 @@ final class EditorModel {
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
+        let staged = FileManager.default.temporaryDirectory.appendingPathComponent("podcast-final-\(UUID().uuidString).mp4")
+        defer { try? FileManager.default.removeItem(at: staged) }
         do {
-            try export(composition, to: url, preset: AVAssetExportPresetPassthrough)
+            try export(composition, to: staged, preset: AVAssetExportPresetPassthrough)
         } catch {
-            try? FileManager.default.removeItem(at: url)
-            try export(composition, to: url, preset: AVAssetExportPreset1280x720)
+            try? FileManager.default.removeItem(at: staged)
+            try export(composition, to: staged, preset: AVAssetExportPreset1280x720)
+        }
+        try requireMovieBytes(at: staged)
+        do {
+            try FileManager.default.copyItem(at: staged, to: url)
+        } catch {
+            let data = try Data(contentsOf: staged)
+            try data.write(to: url, options: .atomic)
         }
     }
 
@@ -743,6 +760,15 @@ final class EditorModel {
         }
         if session.status != .completed {
             throw session.error ?? ExportFailure("Could not finish the movie.")
+        }
+        try requireMovieBytes(at: url)
+    }
+
+    private func requireMovieBytes(at url: URL) throws {
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
+        guard size > 1500 else {
+            try? FileManager.default.removeItem(at: url)
+            throw ExportFailure("The movie file was empty.")
         }
     }
 
