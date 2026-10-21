@@ -74,19 +74,21 @@ struct ContentView: View {
                 .padding(.top, 12)
             layerBar(
                 title: "Foreground",
-                active: model.editLayer == .foreground,
+                active: model.editForeground,
                 selection: model.foregroundID,
                 options: [("none", "None")] + model.foregrounds.map { ($0.id, $0.name) },
                 choose: { model.chooseForeground($0) },
-                add: { importer = .foreground }
+                add: { importer = .foreground },
+                toggle: { model.setForegroundEditing($0) }
             )
             layerBar(
                 title: "Background",
-                active: model.editLayer == .background,
+                active: model.editBackground,
                 selection: model.backgroundID,
                 options: model.backgrounds.map { ($0.id, $0.name) },
                 choose: { model.chooseBackground($0) },
-                add: { importer = .background }
+                add: { importer = .background },
+                toggle: { model.setBackgroundEditing($0) }
             )
             .padding(.bottom, 12)
         }
@@ -131,9 +133,11 @@ struct ContentView: View {
                 Text("Options")
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(Color.ink)
-                Text(model.editLayer == .foreground
-                     ? "Foreground is the only layer you can move."
-                     : "Background is the only layer you can move. Drag the picture. Drag the orange corner to resize.")
+                Text(model.editForeground
+                     ? "Foreground is on. Only that layer can be moved."
+                     : model.editBackground
+                     ? "Background is on. Drag the picture. Drag the orange corner to resize."
+                     : "Both layers are off. Drag a person to move them, or drag the orange corner to resize.")
                     .font(.subheadline)
                     .foregroundStyle(Color.ink.opacity(0.75))
                 ForEach(model.people) { person in
@@ -194,19 +198,15 @@ struct ContentView: View {
         selection: String,
         options: [(String, String)],
         choose: @escaping (String) -> Void,
-        add: @escaping () -> Void
+        add: @escaping () -> Void,
+        toggle: @escaping (Bool) -> Void
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Button(title) {
-                    if title == "Foreground" {
-                        model.editLayer = .foreground
-                    } else {
-                        model.editLayer = .background
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Color.ink)
+                Toggle(title, isOn: Binding(get: { active }, set: toggle))
+                    .toggleStyle(.switch)
+                    .tint(Color.sienna)
+                    .foregroundStyle(Color.ink)
                 Picker(title, selection: Binding(get: { selection }, set: choose)) {
                     ForEach(options, id: \.0) { option in
                         Text(option.1).tag(option.0)
@@ -217,7 +217,7 @@ struct ContentView: View {
                 Button("Add new", action: add)
                     .buttonStyle(.bordered)
             }
-            Text(active ? "\(title) is active." : "Click \(title) to edit only this layer.")
+            Text(active ? "\(title) is on. Only this can be moved." : "Off.")
                 .font(.footnote)
                 .foregroundStyle(Color.ink.opacity(0.7))
         }

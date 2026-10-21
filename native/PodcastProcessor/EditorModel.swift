@@ -28,6 +28,9 @@ struct PersonItem: Identifiable {
     var body: CGImage
     var mouths: [String: CGImage]
     var isOn: Bool
+    var x: Double
+    var y: Double
+    var scale: Double
     var audioName: String?
     var levels: [Float] = []
 }
@@ -47,14 +50,23 @@ final class EditorModel {
     var foregrounds: [PictureItem] = []
     var backgroundID = "coffee"
     var foregroundID = "none"
-    var editLayer: EditLayer = .background
+    var editForeground = false
+    var editBackground = false
+    var selectedPersonID: String?
     var time: TimeInterval = 0
     var note: String?
     private var players: [String: AVAudioPlayer] = [:]
 
     private var dragStart: CGPoint?
     private var dragOrigin: (x: Double, y: Double, scale: Double)?
+    private var dragSubject: DragSubject?
     private var resizing = false
+
+    private enum DragSubject {
+        case foreground
+        case background
+        case person(String)
+    }
 
     init() {
         let names = [
@@ -65,7 +77,8 @@ final class EditorModel {
             ("abby-r", "Abby R"),
             ("abby-s", "Abby S"),
         ]
-        people = names.compactMap { id, name in
+        people = names.enumerated().compactMap { index, pair in
+            let (id, name) = pair
             guard let body = Self.bundleImage("person-\(id)", ext: "png") else { return nil }
             var mouths: [String: CGImage] = [:]
             for shape in Self.shapes {
@@ -73,7 +86,17 @@ final class EditorModel {
                     mouths[shape] = image
                 }
             }
-            return PersonItem(id: id, name: name, body: body, mouths: mouths, isOn: true)
+            let count = Double(names.count)
+            return PersonItem(
+                id: id,
+                name: name,
+                body: body,
+                mouths: mouths,
+                isOn: true,
+                x: (Double(index) + 0.5) / count * 100,
+                y: 46,
+                scale: 72
+            )
         }
         if let coffee = Self.bundleImage("coffee-shop", ext: "jpg") {
             backgrounds.append(PictureItem(id: "coffee", name: "Coffee shop", image: coffee, x: 50, y: 50, scale: 100))
@@ -96,12 +119,20 @@ final class EditorModel {
 
     func chooseBackground(_ id: String) {
         backgroundID = id
-        editLayer = .background
     }
 
     func chooseForeground(_ id: String) {
         foregroundID = id
-        editLayer = .foreground
+    }
+
+    func setForegroundEditing(_ on: Bool) {
+        editForeground = on
+        if on { editBackground = false }
+    }
+
+    func setBackgroundEditing(_ on: Bool) {
+        editBackground = on
+        if on { editForeground = false }
     }
 
     func addImage(data: Data, name: String, layer: EditLayer) {
@@ -120,11 +151,11 @@ final class EditorModel {
         if layer == .foreground {
             foregrounds.append(item)
             foregroundID = item.id
-            editLayer = .foreground
+            setForegroundEditing(true)
         } else {
             backgrounds.append(item)
             backgroundID = item.id
-            editLayer = .background
+            setBackgroundEditing(true)
         }
     }
 
@@ -136,27 +167,56 @@ final class EditorModel {
     }
 
     func beginDrag(at point: CGPoint) {
-        guard let current = activePlacement() else { return }
-        resizing = handleRect().contains(point)
-        dragStart = point
-        dragOrigin = (current.x, current.y, current.scale)
+        if editForeground, let foreground {
+            let rect = foregroundRect(foreground)
+            resizing = handle(for: rect).contains(point)
+            dragSubject = .foreground
+            dragStart = point
+            dragOrigin = (foreground.x, foreground.y, foreground.scale)
+            return
+        }
+        if editBackground, let background {
+            resizing = handleRect().contains(point)
+            dragSubject = .background
+            dragStart = point
+            dragOrigin = (background.x, background.y, background.scale)
+            return
+        }
+        for person in people.filter(\.isOn).reversed() {
+            let rect = bodyRect(person)
+            let corner = handle(for: rect)
+            if corner.contains(point) || rect.contains(point) {
+                selectedPersonID = person.id
+                resizing = corner.contains(point)
+                dragSubject = .person(person.id)
+                dragStart = point
+                dragOrigin = (person.x, person.y, person.scale)
+                return
+            }
+        }
     }
 
     func updateDrag(to point: CGPoint) {
-        guard let start = dragStart, let origin = dragOrigin else { return }
+        guard let start = dragStart, let origin = dragOrigin, let dragSubject else { return }
         let dx = Double((point.x - start.x) / Self.scene.width) * 100
         let dy = Double((point.y - start.y) / Self.scene.height) * 100
         if resizing {
-            let limit = editLayer == .foreground ? 8.0...180.0 : 40.0...250.0
-            setActive(x: origin.x, y: origin.y, scale: min(limit.upperBound, max(limit.lowerBound, origin.scale + dx)))
+            let limit: ClosedRange<Double>
+            switch dragSubject {
+            case .foreground: limit = 8...180
+            case .background: limit = 40...250
+            case .person: limit = 20...140
+            }
+            setSubject(dragSubject, x: origin.x, y: origin.y, scale: min(limit.upperBound, max(limit.lowerBound, origin.scale + dx)))
         } else {
-            setActive(x: origin.x + dx, y: origin.y + dy, scale: origin.scale)
+            setSubject(dragSubject, x: origin.x + dx, y: origin.y + dy, scale: origin.scale)
         }
     }
 
     func endDrag() {
         dragStart = nil
         dragOrigin = nil
+        dragSubject = nil
         resizing = false
     }
 
@@ -181,18 +241,23 @@ final class EditorModel {
             ctx.draw(background.image, in: placed(coverRect(background.image, centerX: background.x, centerY: background.y, scale: background.scale, canvas: canvas)))
         }
         let visible = people.filter(\.isOn)
-        for (index, person) in visible.enumerated() {
-            let bodyH = canvas.height * 0.72
-            let bodyW = bodyH * CGFloat(person.body.width) / CGFloat(max(1, person.body.height))
-            let cx = (CGFloat(index) + 0.5) / CGFloat(max(1, visible.count)) * canvas.width
-            let rect = CGRect(x: cx - bodyW / 2, y: canvas.height * 0.46 - bodyH / 2, width: bodyW, height: bodyH)
+        for person in visible {
+            let rect = bodyRect(person)
             ctx.draw(person.body, in: placed(rect))
             let shape = mouthShape(person, time)
             if let mouth = person.mouths[shape] ?? person.mouths["closed"] {
-                let mw = bodyW * 0.14
+                let mw = rect.width * 0.14
                 let mh = mw * CGFloat(mouth.height) / CGFloat(max(1, mouth.width))
-                let mouthRect = CGRect(x: rect.minX + bodyW * 0.5 - mw / 2, y: rect.minY + bodyH * 0.34, width: mw, height: mh)
+                let mouthRect = CGRect(x: rect.minX + rect.width * 0.5 - mw / 2, y: rect.minY + rect.height * 0.34, width: mw, height: mh)
                 ctx.draw(mouth, in: placed(mouthRect))
+            }
+            if !editForeground && !editBackground && person.id == selectedPersonID {
+                let drawn = placed(rect)
+                ctx.setStrokeColor(CGColor(srgbRed: 0.77, green: 0.36, blue: 0.15, alpha: 1))
+                ctx.setLineWidth(4)
+                ctx.stroke(drawn)
+                ctx.setFillColor(CGColor(srgbRed: 0.77, green: 0.36, blue: 0.15, alpha: 1))
+                ctx.fill(placed(handle(for: rect)))
             }
         }
         if let foreground {
@@ -206,14 +271,14 @@ final class EditorModel {
             )
             let drawn = placed(rect)
             ctx.draw(foreground.image, in: drawn)
-            if editLayer == .foreground {
+            if editForeground {
                 ctx.setStrokeColor(CGColor(srgbRed: 0.77, green: 0.36, blue: 0.15, alpha: 1))
                 ctx.setLineWidth(4)
                 ctx.stroke(drawn)
             }
         }
         ctx.restoreGState()
-        if editLayer == .background {
+        if editBackground {
             ctx.setFillColor(CGColor(srgbRed: 0.77, green: 0.36, blue: 0.15, alpha: 1))
             ctx.fill(placed(handleRect()))
         }
@@ -368,25 +433,49 @@ final class EditorModel {
         }
     }
 
-    private func activePlacement() -> (x: Double, y: Double, scale: Double)? {
-        if editLayer == .foreground {
-            guard let foreground else { return nil }
-            return (foreground.x, foreground.y, foreground.scale)
-        }
-        guard let background else { return nil }
-        return (background.x, background.y, background.scale)
-    }
-
-    private func setActive(x: Double, y: Double, scale: Double) {
-        if editLayer == .foreground, let index = foregrounds.firstIndex(where: { $0.id == foregroundID }) {
+    private func setSubject(_ subject: DragSubject, x: Double, y: Double, scale: Double) {
+        switch subject {
+        case .foreground:
+            guard let index = foregrounds.firstIndex(where: { $0.id == foregroundID }) else { return }
             foregrounds[index].x = x
             foregrounds[index].y = y
             foregrounds[index].scale = scale
-        } else if let index = backgrounds.firstIndex(where: { $0.id == backgroundID }) {
+        case .background:
+            guard let index = backgrounds.firstIndex(where: { $0.id == backgroundID }) else { return }
             backgrounds[index].x = x
             backgrounds[index].y = y
             backgrounds[index].scale = scale
+        case .person(let id):
+            guard let index = people.firstIndex(where: { $0.id == id }) else { return }
+            people[index].x = x
+            people[index].y = y
+            people[index].scale = scale
         }
+    }
+
+    private func bodyRect(_ person: PersonItem) -> CGRect {
+        let canvas = Self.scene
+        let bodyH = canvas.height * CGFloat(person.scale / 100)
+        let bodyW = bodyH * CGFloat(person.body.width) / CGFloat(max(1, person.body.height))
+        let cx = CGFloat(person.x / 100) * canvas.width
+        let cy = CGFloat(person.y / 100) * canvas.height
+        return CGRect(x: cx - bodyW / 2, y: cy - bodyH / 2, width: bodyW, height: bodyH)
+    }
+
+    private func foregroundRect(_ item: PictureItem) -> CGRect {
+        let canvas = Self.scene
+        let height = canvas.height * CGFloat(item.scale / 100)
+        let width = height * CGFloat(item.image.width) / CGFloat(max(1, item.image.height))
+        return CGRect(
+            x: CGFloat(item.x / 100) * canvas.width - width / 2,
+            y: CGFloat(item.y / 100) * canvas.height - height / 2,
+            width: width,
+            height: height
+        )
+    }
+
+    private func handle(for rect: CGRect) -> CGRect {
+        CGRect(x: rect.maxX - 36, y: rect.maxY - 36, width: 36, height: 36)
     }
 
     private func handleRect() -> CGRect {
