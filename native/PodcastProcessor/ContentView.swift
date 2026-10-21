@@ -214,6 +214,20 @@ struct ContentView: View {
                                 .foregroundStyle(Color.ink)
                                 .lineLimit(1)
                         }
+                        HStack(spacing: 8) {
+                            Text("Volume")
+                                .font(.footnote)
+                                .foregroundStyle(Color.ink.opacity(0.7))
+                            Slider(value: Binding(
+                                get: { person.volume },
+                                set: { model.setVolume(person.id, $0) }
+                            ), in: 0...1)
+                            .tint(Color.sienna)
+                            Text("\(Int((person.volume * 100).rounded()))%")
+                                .font(.footnote.monospacedDigit())
+                                .foregroundStyle(Color.ink)
+                                .frame(width: 40, alignment: .trailing)
+                        }
                     }
                 }
                 Button("Save face positions") { model.saveFaces() }

@@ -36,6 +36,7 @@ struct PersonItem: Identifiable {
     var mouthScale: Double
     var audioName: String?
     var audioURL: URL?
+    var volume: Double = 1
     var levels: [Float] = []
 }
 
@@ -132,6 +133,7 @@ final class EditorModel {
             backgroundID = backgrounds[0].id
         }
         restoreFaces()
+        restoreVolumes()
     }
 
     var background: PictureItem? {
@@ -445,13 +447,33 @@ final class EditorModel {
         for person in people where person.isOn {
             guard let player = players[person.id] else { continue }
             player.currentTime = 0
+            player.volume = Float(person.volume)
             player.play()
         }
+    }
+
+    func setVolume(_ id: String, _ volume: Double) {
+        let volume = min(1, max(0, volume))
+        guard let index = people.firstIndex(where: { $0.id == id }) else { return }
+        people[index].volume = volume
+        players[id]?.volume = Float(volume)
+        var saved = UserDefaults.standard.dictionary(forKey: "person-volumes") ?? [:]
+        saved[id] = volume
+        UserDefaults.standard.set(saved, forKey: "person-volumes")
     }
 
     func stopAudio() {
         for player in players.values {
             player.pause()
+        }
+    }
+
+    private func restoreVolumes() {
+        guard let saved = UserDefaults.standard.dictionary(forKey: "person-volumes") else { return }
+        for (id, value) in saved {
+            let volume = (value as? NSNumber)?.doubleValue ?? 1
+            guard let index = people.firstIndex(where: { $0.id == id }) else { continue }
+            people[index].volume = min(1, max(0, volume))
         }
     }
 
@@ -583,27 +605,26 @@ final class EditorModel {
     }
 
     private func mixedAudio() throws -> AVAudioPCMBuffer? {
-        let urls = people.filter { $0.isOn && $0.audioURL != nil }.compactMap(\.audioURL)
-        guard !urls.isEmpty else { return nil }
+        let tracks = people.filter { $0.isOn && $0.audioURL != nil }
+        guard !tracks.isEmpty else { return nil }
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else { return nil }
-        var decoded: [AVAudioPCMBuffer] = []
-        for url in urls {
-            if let buffer = try decodeAudio(url, to: format) {
-                decoded.append(buffer)
-            }
+        var decoded: [(AVAudioPCMBuffer, Float)] = []
+        for person in tracks {
+            guard let url = person.audioURL, let buffer = try decodeAudio(url, to: format) else { continue }
+            decoded.append((buffer, Float(person.volume)))
         }
-        guard let longest = decoded.max(by: { $0.frameLength < $1.frameLength }),
+        guard let longest = decoded.max(by: { $0.0.frameLength < $1.0.frameLength })?.0,
               let mix = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: longest.frameLength) else { return nil }
         mix.frameLength = longest.frameLength
         let frames = Int(mix.frameLength)
         for channel in 0..<Int(format.channelCount) {
             guard let dest = mix.floatChannelData?[channel] else { continue }
             for index in 0..<frames { dest[index] = 0 }
-            for buffer in decoded {
+            for (buffer, gain) in decoded {
                 let sourceChannel = min(channel, Int(buffer.format.channelCount) - 1)
                 guard let source = buffer.floatChannelData?[sourceChannel] else { continue }
                 let count = min(frames, Int(buffer.frameLength))
-                for index in 0..<count { dest[index] += source[index] }
+                for index in 0..<count { dest[index] += source[index] * gain }
             }
             var peak: Float = 0
             for index in 0..<frames { peak = max(peak, abs(dest[index])) }
