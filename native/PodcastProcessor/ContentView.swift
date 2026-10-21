@@ -181,31 +181,40 @@ struct ContentView: View {
                     .font(.subheadline)
                     .foregroundStyle(Color.ink.opacity(0.75))
                 ForEach(model.people) { person in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Toggle(person.name, isOn: Binding(
-                            get: { person.isOn },
-                            set: { value in
-                                if let index = model.people.firstIndex(where: { $0.id == person.id }) {
-                                    model.people[index].isOn = value
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 8) {
+                            Toggle(person.name, isOn: Binding(
+                                get: { person.isOn },
+                                set: { value in
+                                    if let index = model.people.firstIndex(where: { $0.id == person.id }) {
+                                        model.people[index].isOn = value
+                                    }
                                 }
+                            ))
+                            .tint(Color.sienna)
+                            .foregroundStyle(Color.ink)
+                            Spacer(minLength: 4)
+                            Button("Load audio") {
+                                audioPerson = person.id
+                                showAudio = true
                             }
-                        ))
-                        .tint(Color.sienna)
-                        .foregroundStyle(Color.ink)
-                        Button("Load audio") {
-                            audioPerson = person.id
-                            showAudio = true
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .tint(Color.ink)
+                            .foregroundStyle(Color.ink)
                         }
-                        .buttonStyle(.bordered)
-                        .tint(Color.ink)
-                        .foregroundStyle(Color.ink)
                         if let audioName = person.audioName {
                             Text(audioName)
                                 .font(.footnote)
                                 .foregroundStyle(Color.ink)
+                                .lineLimit(1)
                         }
                     }
                 }
+                Button("Save face positions") { model.saveFaces() }
+                    .buttonStyle(.bordered)
+                    .tint(Color.ink)
+                    .foregroundStyle(Color.ink)
                 Button(model.examining ? "Examining…" : "Examine audio and sync mouths") {
                     model.examineAndSync()
                 }
@@ -236,6 +245,10 @@ struct ContentView: View {
                         .buttonStyle(.borderedProminent)
                         .tint(Color.sienna)
                         .disabled(busy)
+                }
+                if let progress = model.exportProgress {
+                    ProgressView(value: progress)
+                        .tint(Color.sienna)
                 }
                 if let note = model.note {
                     Text(note)
@@ -313,6 +326,7 @@ struct ContentView: View {
 
     private func exportMovie() {
         busy = true
+        model.exportProgress = 0
         let model = model
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("scene-\(UUID().uuidString).mp4")
         DispatchQueue.global(qos: .userInitiated).async {
@@ -321,11 +335,13 @@ struct ContentView: View {
                 DispatchQueue.main.async {
                     movieFile = MovieFile(url: url)
                     showMovie = true
+                    model.exportProgress = nil
                     busy = false
                 }
             } catch {
                 DispatchQueue.main.async {
                     model.note = error.localizedDescription
+                    model.exportProgress = nil
                     busy = false
                 }
             }

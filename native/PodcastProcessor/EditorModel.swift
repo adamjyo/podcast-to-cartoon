@@ -63,6 +63,7 @@ final class EditorModel {
     var note: String?
     var examining = false
     var examineProgress: Double?
+    var exportProgress: Double?
     private var players: [String: AVAudioPlayer] = [:]
 
     private var dragStart: CGPoint?
@@ -130,6 +131,7 @@ final class EditorModel {
         if backgrounds.isEmpty == false {
             backgroundID = backgrounds[0].id
         }
+        restoreFaces()
     }
 
     var background: PictureItem? {
@@ -535,6 +537,7 @@ final class EditorModel {
         let longest = people.filter(\.isOn).map { Double($0.levels.count) * 0.08 }.max() ?? 0
         let duration = longest > 0.2 ? longest : 4
         let frames = max(1, Int(duration * Double(fps)))
+        var lastPercent = -1
         for index in 0..<frames {
             while !input.isReadyForMoreMediaData {
                 Thread.sleep(forTimeInterval: 0.002)
@@ -544,6 +547,11 @@ final class EditorModel {
             let time = CMTime(value: CMTimeValue(index), timescale: CMTimeScale(fps))
             if !adaptor.append(buffer, withPresentationTime: time) {
                 throw writer.error ?? CocoaError(.fileWriteUnknown)
+            }
+            let percent = Int(Double(index + 1) / Double(frames) * 100)
+            if percent != lastPercent {
+                lastPercent = percent
+                DispatchQueue.main.async { self.exportProgress = Double(percent) / 100 }
             }
         }
         input.markAsFinished()
@@ -595,6 +603,29 @@ final class EditorModel {
         people[index].mouthX = next.mouthX
         people[index].mouthY = next.mouthY
         people[index].mouthScale = next.mouthScale
+    }
+
+    func saveFaces() {
+        let faces = people.map {
+            SavedFace(id: $0.id, x: $0.x, y: $0.y, scale: $0.scale, mouthX: $0.mouthX, mouthY: $0.mouthY, mouthScale: $0.mouthScale)
+        }
+        guard let data = try? JSONEncoder().encode(faces) else { return }
+        UserDefaults.standard.set(data, forKey: "saved-faces")
+        note = "Face positions saved. The next project will start lined up."
+    }
+
+    private func restoreFaces() {
+        guard let data = UserDefaults.standard.data(forKey: "saved-faces"),
+              let faces = try? JSONDecoder().decode([SavedFace].self, from: data) else { return }
+        for face in faces {
+            guard let index = people.firstIndex(where: { $0.id == face.id }) else { continue }
+            people[index].x = face.x
+            people[index].y = face.y
+            people[index].scale = face.scale
+            people[index].mouthX = face.mouthX
+            people[index].mouthY = face.mouthY
+            people[index].mouthScale = face.mouthScale
+        }
     }
 
     private func mouthRect(_ person: PersonItem, shape: String) -> CGRect? {
@@ -685,6 +716,16 @@ final class EditorModel {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
+}
+
+struct SavedFace: Codable {
+    var id: String
+    var x: Double
+    var y: Double
+    var scale: Double
+    var mouthX: Double
+    var mouthY: Double
+    var mouthScale: Double
 }
 
 struct PNGFile: FileDocument {
