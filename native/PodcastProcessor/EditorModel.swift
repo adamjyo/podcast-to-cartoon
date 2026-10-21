@@ -578,103 +578,175 @@ final class EditorModel {
             return (audioURL, Float(person.volume))
         }
         let pumps = tracks.compactMap { AudioPump(url: $0.0, volume: $0.1) }
-        let fps = 12
         let levelDuration = people.filter(\.isOn).map { Double($0.levels.count) * 0.08 }.max() ?? 0
         let soundDuration = pumps.map(\.duration).max() ?? 0
         let duration = max(soundDuration, levelDuration) > 0.2 ? max(soundDuration, levelDuration) : 4
         let mixURL = try writeMix(pumps, duration: duration)
         defer { if let mixURL { try? FileManager.default.removeItem(at: mixURL) } }
-        let sound: (reader: AVAssetReader, output: AVAssetReaderTrackOutput)?
-        if let mixURL {
-            sound = try openSound(mixURL)
-        } else {
-            sound = nil
+        guard let mixURL else {
+            try writeVideo(to: url, duration: duration, progressStart: 0.02, progressEnd: 1)
+            return
+        }
+        let pictureURL = FileManager.default.temporaryDirectory.appendingPathComponent("podcast-picture-\(UUID().uuidString).mp4")
+        let soundURL = FileManager.default.temporaryDirectory.appendingPathComponent("podcast-sound-\(UUID().uuidString).m4a")
+        defer {
+            try? FileManager.default.removeItem(at: pictureURL)
+            try? FileManager.default.removeItem(at: soundURL)
+        }
+        try writeVideo(to: pictureURL, duration: duration, progressStart: 0.15, progressEnd: 0.8)
+        try writeCompressedAudio(from: mixURL, to: soundURL)
+        try join(video: pictureURL, audio: soundURL, to: url)
+    }
+
+    private func writeVideo(to url: URL, duration: Double, progressStart: Double, progressEnd: Double) throws {
+        DispatchQueue.main.async { self.note = "Writing the picture…" }
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
         }
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
-        let video = AVAssetWriterInput(mediaType: .video, outputSettings: [
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: 1280,
             AVVideoHeightKey: 720,
         ])
-        video.expectsMediaDataInRealTime = false
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: video, sourcePixelBufferAttributes: [
+        input.expectsMediaDataInRealTime = false
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
             kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
             kCVPixelBufferWidthKey as String: 1280,
             kCVPixelBufferHeightKey as String: 720,
         ])
-        writer.add(video)
-        var audio: AVAssetWriterInput?
-        if sound != nil {
-            var layout = AudioChannelLayout()
-            layout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo
-            let layoutData = Data(bytes: &layout, count: MemoryLayout<AudioChannelLayout>.size)
-            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: 44_100,
-                AVNumberOfChannelsKey: 2,
-                AVEncoderBitRateKey: 160_000,
-                AVChannelLayoutKey: layoutData,
-            ])
-            input.expectsMediaDataInRealTime = false
-            writer.add(input)
-            audio = input
-        }
-        guard writer.startWriting() else { throw writer.error ?? ExportFailure("Could not start the movie file.") }
+        writer.add(input)
+        guard writer.startWriting() else { throw writer.error ?? ExportFailure("Could not start the picture.") }
         writer.startSession(atSourceTime: .zero)
+        let fps = 12
         let frames = max(1, Int(duration * Double(fps)))
-        var videoIndex = 0
-        var queued: CMSampleBuffer?
-        var soundDone = sound == nil
-        var lastPercent = -1
         var stalls = 0
-        while videoIndex < frames || !soundDone {
-            var wrote = false
-            let videoTime = Double(videoIndex) / Double(fps)
-            let queuedTime = queued.map { CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp($0)) } ?? videoTime
-            if videoIndex < frames, video.isReadyForMoreMediaData, soundDone || videoTime <= queuedTime + 0.5 {
-                let sample = Double(videoIndex) / Double(fps)
-                if let image = frame(at: sample), let buffer = pixelBuffer(from: image) {
-                    let time = CMTime(value: CMTimeValue(videoIndex), timescale: CMTimeScale(fps))
-                    if !adaptor.append(buffer, withPresentationTime: time) {
-                        throw writer.error ?? ExportFailure("Could not add a picture frame.")
-                    }
-                }
-                videoIndex += 1
-                wrote = true
-            }
-            if let audio, !soundDone, audio.isReadyForMoreMediaData, queuedTime <= videoTime + 0.5 || videoIndex >= frames {
-                if queued == nil {
-                    queued = sound?.output.copyNextSampleBuffer()
-                    if queued == nil {
-                        soundDone = sound?.reader.status != .reading
-                    }
-                }
-                if let sample = queued, CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample)) <= videoTime + 0.5 || videoIndex >= frames {
-                    if !audio.append(sample) {
-                        throw writer.error ?? ExportFailure(writer.error?.localizedDescription ?? "Could not add the sound.")
-                    }
-                    queued = nil
-                    wrote = true
-                }
-            }
-            let percent = 15 + Int(Double(videoIndex) / Double(frames) * 85)
-            if percent != lastPercent {
-                lastPercent = percent
-                DispatchQueue.main.async { self.exportProgress = Double(percent) / 100 }
-            }
-            if wrote {
-                stalls = 0
-            } else {
+        for index in 0..<frames {
+            while !input.isReadyForMoreMediaData {
                 stalls += 1
-                if stalls > 4000 {
+                if stalls > 15000 {
                     writer.cancelWriting()
-                    throw ExportFailure("Export stalled. Quit the app and try the movie again.")
+                    throw writer.error ?? ExportFailure("The picture encoder stopped.")
                 }
                 Thread.sleep(forTimeInterval: 0.002)
             }
+            stalls = 0
+            let sample = Double(index) / Double(fps)
+            if let image = frame(at: sample), let buffer = pixelBuffer(from: image) {
+                let time = CMTime(value: CMTimeValue(index), timescale: CMTimeScale(fps))
+                if !adaptor.append(buffer, withPresentationTime: time) {
+                    throw writer.error ?? ExportFailure("Could not add a picture frame.")
+                }
+            }
+            if index % 3 == 0 {
+                let progress = progressStart + Double(index) / Double(frames) * (progressEnd - progressStart)
+                DispatchQueue.main.async { self.exportProgress = progress }
+            }
         }
-        video.markAsFinished()
-        audio?.markAsFinished()
+        input.markAsFinished()
+        try finish(writer)
+    }
+
+    private func writeCompressedAudio(from source: URL, to url: URL) throws {
+        DispatchQueue.main.async {
+            self.note = "Adding the sound…"
+            self.exportProgress = 0.82
+        }
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+        let sound = try openSound(source)
+        let writer = try AVAssetWriter(outputURL: url, fileType: .m4a)
+        var layout = AudioChannelLayout()
+        layout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo
+        let layoutData = Data(bytes: &layout, count: MemoryLayout<AudioChannelLayout>.size)
+        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 44_100,
+            AVNumberOfChannelsKey: 2,
+            AVEncoderBitRateKey: 160_000,
+            AVChannelLayoutKey: layoutData,
+        ])
+        input.expectsMediaDataInRealTime = false
+        writer.add(input)
+        guard writer.startWriting() else { throw writer.error ?? ExportFailure("Could not start the sound file.") }
+        writer.startSession(atSourceTime: .zero)
+        var stalls = 0
+        while sound.reader.status == .reading {
+            if !input.isReadyForMoreMediaData {
+                stalls += 1
+                if stalls > 15000 {
+                    writer.cancelWriting()
+                    throw writer.error ?? ExportFailure("The sound encoder stopped.")
+                }
+                Thread.sleep(forTimeInterval: 0.002)
+                continue
+            }
+            stalls = 0
+            guard let sample = sound.output.copyNextSampleBuffer() else { break }
+            if !input.append(sample) {
+                throw writer.error ?? ExportFailure("Could not add the sound.")
+            }
+        }
+        if sound.reader.status == .failed {
+            throw sound.reader.error ?? ExportFailure("Could not read the mixed sound.")
+        }
+        input.markAsFinished()
+        try finish(writer)
+    }
+
+    private func join(video videoURL: URL, audio audioURL: URL, to url: URL) throws {
+        DispatchQueue.main.async {
+            self.note = "Finishing the movie…"
+            self.exportProgress = 0.9
+        }
+        let picture = AVURLAsset(url: videoURL)
+        let sound = AVURLAsset(url: audioURL)
+        waitUntilLoaded(picture)
+        waitUntilLoaded(sound)
+        guard let pictureTrack = picture.tracks(withMediaType: .video).first,
+              let soundTrack = sound.tracks(withMediaType: .audio).first else {
+            throw ExportFailure("The picture or the sound could not be opened.")
+        }
+        let composition = AVMutableComposition()
+        guard let videoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid),
+              let audioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            throw ExportFailure("Could not build the movie.")
+        }
+        let pictureDuration = picture.duration
+        let soundDuration = CMTimeMinimum(sound.duration, pictureDuration)
+        try videoTrack.insertTimeRange(CMTimeRange(start: .zero, duration: pictureDuration), of: pictureTrack, at: .zero)
+        try audioTrack.insertTimeRange(CMTimeRange(start: .zero, duration: soundDuration), of: soundTrack, at: .zero)
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+        do {
+            try export(composition, to: url, preset: AVAssetExportPresetPassthrough)
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            try export(composition, to: url, preset: AVAssetExportPreset1280x720)
+        }
+    }
+
+    private func export(_ composition: AVMutableComposition, to url: URL, preset: String) throws {
+        guard let session = AVAssetExportSession(asset: composition, presetName: preset) else {
+            throw ExportFailure("Could not finish the movie.")
+        }
+        session.outputURL = url
+        session.outputFileType = session.supportedFileTypes.contains(.mp4) ? .mp4 : session.supportedFileTypes.first
+        guard session.outputFileType != nil else { throw ExportFailure("Could not choose a movie type.") }
+        let wait = DispatchSemaphore(value: 0)
+        session.exportAsynchronously { wait.signal() }
+        while wait.wait(timeout: .now() + 0.25) == .timedOut {
+            let progress = 0.9 + Double(session.progress) * 0.1
+            DispatchQueue.main.async { self.exportProgress = progress }
+        }
+        if session.status != .completed {
+            throw session.error ?? ExportFailure("Could not finish the movie.")
+        }
+    }
+
+    private func finish(_ writer: AVAssetWriter) throws {
         let wait = DispatchSemaphore(value: 0)
         writer.finishWriting { wait.signal() }
         if wait.wait(timeout: .now() + 180) == .timedOut {
@@ -684,6 +756,12 @@ final class EditorModel {
         if writer.status != .completed {
             throw writer.error ?? ExportFailure("The movie file was not finished.")
         }
+    }
+
+    private func waitUntilLoaded(_ asset: AVURLAsset) {
+        let wait = DispatchSemaphore(value: 0)
+        asset.loadValuesAsynchronously(forKeys: ["tracks", "duration"]) { wait.signal() }
+        wait.wait()
     }
 
     private func writeMix(_ pumps: [AudioPump], duration: Double) throws -> URL? {
