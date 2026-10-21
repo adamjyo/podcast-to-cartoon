@@ -56,6 +56,7 @@ final class EditorModel {
     var editForeground = false
     var editBackground = false
     var selectedPersonID: String?
+    var selectedIsMouth = false
     var time: TimeInterval = 0
     var note: String?
     private var players: [String: AVAudioPlayer] = [:]
@@ -69,6 +70,7 @@ final class EditorModel {
         case foreground
         case background
         case person(String)
+        case mouth(String)
     }
 
     init() {
@@ -198,10 +200,25 @@ final class EditorModel {
             return
         }
         for person in people.filter(\.isOn).reversed() {
+            let shape = mouthShape(person, time)
+            guard let mouth = mouthRect(person, shape: shape) else { continue }
+            let corner = handle(for: mouth, size: 16)
+            if corner.contains(point) || mouth.contains(point) {
+                selectedPersonID = person.id
+                selectedIsMouth = true
+                resizing = corner.contains(point)
+                dragSubject = .mouth(person.id)
+                dragStart = point
+                dragOrigin = (person.mouthX, person.mouthY, person.mouthScale)
+                return
+            }
+        }
+        for person in people.filter(\.isOn).reversed() {
             let rect = bodyRect(person)
             let corner = handle(for: rect)
             if corner.contains(point) || rect.contains(point) {
                 selectedPersonID = person.id
+                selectedIsMouth = false
                 resizing = corner.contains(point)
                 dragSubject = .person(person.id)
                 dragStart = point
@@ -213,6 +230,18 @@ final class EditorModel {
 
     func updateDrag(to point: CGPoint) {
         guard let start = dragStart, let origin = dragOrigin, let dragSubject else { return }
+        if case .mouth(let id) = dragSubject {
+            guard let person = people.first(where: { $0.id == id }) else { return }
+            let body = bodyRect(person)
+            let dx = Double(point.x - start.x) / Double(max(1, body.width)) * 100
+            let dy = Double(point.y - start.y) / Double(max(1, body.height)) * 100
+            if resizing {
+                setMouth(id, x: origin.x, y: origin.y, scale: min(40, max(4, origin.scale + dx)))
+            } else {
+                setMouth(id, x: origin.x + dx, y: origin.y + dy, scale: origin.scale)
+            }
+            return
+        }
         let dx = Double((point.x - start.x) / Self.scene.width) * 100
         let dy = Double((point.y - start.y) / Self.scene.height) * 100
         if resizing {
@@ -221,6 +250,7 @@ final class EditorModel {
             case .foreground: limit = 8...180
             case .background: limit = 40...250
             case .person: limit = 20...140
+            case .mouth: return
             }
             setSubject(dragSubject, x: origin.x, y: origin.y, scale: min(limit.upperBound, max(limit.lowerBound, origin.scale + dx)))
         } else {
@@ -260,18 +290,20 @@ final class EditorModel {
             let rect = bodyRect(person)
             ctx.draw(person.body, in: placed(rect))
             let shape = mouthShape(person, time)
-            if let mouth = person.mouths[shape] ?? person.mouths["closed"] {
-                let mw = rect.width * CGFloat(person.mouthScale / 100)
-                let mh = mw * CGFloat(mouth.height) / CGFloat(max(1, mouth.width))
-                let mouthRect = CGRect(
-                    x: rect.minX + rect.width * CGFloat(person.mouthX / 100) - mw / 2,
-                    y: rect.minY + rect.height * CGFloat(person.mouthY / 100) - mh / 2,
-                    width: mw,
-                    height: mh
-                )
-                ctx.draw(mouth, in: placed(mouthRect))
+            if let lips = mouthRect(person, shape: shape) {
+                if let mouth = person.mouths[shape] ?? person.mouths["closed"] {
+                    ctx.draw(mouth, in: placed(lips))
+                }
+                if !editForeground && !editBackground {
+                    let selected = person.id == selectedPersonID && selectedIsMouth
+                    ctx.setStrokeColor(CGColor(srgbRed: 0.77, green: 0.36, blue: 0.15, alpha: 1))
+                    ctx.setLineWidth(selected ? 4 : 2)
+                    ctx.stroke(placed(lips))
+                    ctx.setFillColor(CGColor(srgbRed: 0.77, green: 0.36, blue: 0.15, alpha: 1))
+                    ctx.fill(placed(handle(for: lips, size: 16)))
+                }
             }
-            if !editForeground && !editBackground && person.id == selectedPersonID {
+            if !editForeground && !editBackground && person.id == selectedPersonID && !selectedIsMouth {
                 let drawn = placed(rect)
                 ctx.setStrokeColor(CGColor(srgbRed: 0.77, green: 0.36, blue: 0.15, alpha: 1))
                 ctx.setLineWidth(4)
@@ -470,7 +502,30 @@ final class EditorModel {
             people[index].x = x
             people[index].y = y
             people[index].scale = scale
+        case .mouth:
+            return
         }
+    }
+
+    private func setMouth(_ id: String, x: Double, y: Double, scale: Double) {
+        guard let index = people.firstIndex(where: { $0.id == id }) else { return }
+        people[index].mouthX = x
+        people[index].mouthY = y
+        people[index].mouthScale = scale
+    }
+
+    private func mouthRect(_ person: PersonItem, shape: String) -> CGRect? {
+        guard person.mouths[shape] ?? person.mouths["closed"] != nil else { return nil }
+        let mouth = (person.mouths[shape] ?? person.mouths["closed"])!
+        let rect = bodyRect(person)
+        let mw = rect.width * CGFloat(person.mouthScale / 100)
+        let mh = mw * CGFloat(mouth.height) / CGFloat(max(1, mouth.width))
+        return CGRect(
+            x: rect.minX + rect.width * CGFloat(person.mouthX / 100) - mw / 2,
+            y: rect.minY + rect.height * CGFloat(person.mouthY / 100) - mh / 2,
+            width: mw,
+            height: mh
+        )
     }
 
     private func bodyRect(_ person: PersonItem) -> CGRect {
@@ -494,8 +549,8 @@ final class EditorModel {
         )
     }
 
-    private func handle(for rect: CGRect) -> CGRect {
-        CGRect(x: rect.maxX - 36, y: rect.maxY - 36, width: 36, height: 36)
+    private func handle(for rect: CGRect, size: CGFloat = 36) -> CGRect {
+        CGRect(x: rect.maxX - size, y: rect.maxY - size, width: size, height: size)
     }
 
     private func handleRect() -> CGRect {

@@ -137,7 +137,7 @@ struct ContentView: View {
                      ? "Foreground is on. Only that layer can be moved."
                      : model.editBackground
                      ? "Background is on. Drag the picture. Drag the orange corner to resize."
-                     : "Both layers are off. Drag a person to move them, or drag the orange corner to resize.")
+                     : "Both layers are off. Drag a mouth to line it up. Drag its orange corner to resize it. Drag a person to move them.")
                     .font(.subheadline)
                     .foregroundStyle(Color.ink.opacity(0.75))
                 ForEach(model.people) { person in
