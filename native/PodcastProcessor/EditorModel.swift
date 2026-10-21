@@ -35,6 +35,8 @@ struct PersonItem: Identifiable {
     var mouthY: Double
     var mouthScale: Double
     var audioName: String?
+    var audioURL: URL?
+    var levels: [Float] = []
     var levels: [Float] = []
 }
 
@@ -60,6 +62,8 @@ final class EditorModel {
     var unlockedMouthID: String?
     var time: TimeInterval = 0
     var note: String?
+    var examining = false
+    var examineProgress: Double?
     private var players: [String: AVAudioPlayer] = [:]
 
     private var dragStart: CGPoint?
@@ -381,17 +385,53 @@ final class EditorModel {
                 try FileManager.default.removeItem(at: copy)
             }
             try FileManager.default.copyItem(at: url, to: copy)
-            let levels = try Self.levels(in: copy)
             let player = try AVAudioPlayer(contentsOf: copy)
             player.prepareToPlay()
             if let index = people.firstIndex(where: { $0.id == personID }) {
-                people[index].levels = levels
+                people[index].audioURL = copy
                 people[index].audioName = url.deletingPathExtension().lastPathComponent
+                people[index].levels = []
             }
             players[personID] = player
-            note = nil
+            note = "Audio loaded. Press Examine audio and sync mouths."
         } catch {
             note = "Could not read that audio. Use a wav, mp3, or m4a file."
+        }
+    }
+
+    func examineAndSync() {
+        let jobs = people.compactMap { person -> (String, URL)? in
+            guard person.isOn, let url = person.audioURL else { return nil }
+            return (person.id, url)
+        }
+        guard !jobs.isEmpty else {
+            note = "Load audio for a person first."
+            return
+        }
+        examining = true
+        examineProgress = 0
+        note = "Examining audio…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            var results: [(String, [Float])] = []
+            for (offset, job) in jobs.enumerated() {
+                let levels = (try? Self.levels(in: job.1)) ?? []
+                results.append((job.0, levels))
+                let progress = Double(offset + 1) / Double(jobs.count)
+                DispatchQueue.main.async { self.examineProgress = progress }
+            }
+            DispatchQueue.main.async {
+                for (id, levels) in results {
+                    if let index = self.people.firstIndex(where: { $0.id == id }) {
+                        self.people[index].levels = levels
+                    }
+                }
+                self.examining = false
+                self.examineProgress = nil
+                let synced = results.filter { !$0.1.isEmpty }.count
+                self.note = synced == 0
+                    ? "Could not read the audio."
+                    : "Synced mouths for \(synced) \(synced == 1 ? "person" : "people")."
+            }
         }
     }
 

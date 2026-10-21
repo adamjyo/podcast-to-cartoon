@@ -24,6 +24,8 @@ struct ContentView: View {
             }
         }
         .background(Color.paper)
+        .preferredColorScheme(.light)
+        .tint(Color.ink)
         .fileImporter(
             isPresented: $showImage,
             allowedContentTypes: [.png, .jpeg, .heic, .gif, .tiff, .bmp, .webP, .image],
@@ -190,17 +192,36 @@ struct ContentView: View {
                         ))
                         .tint(Color.sienna)
                         .foregroundStyle(Color.ink)
-                        Button(person.audioName ?? "Load audio") {
+                        Button("Load audio") {
                             audioPerson = person.id
                             showAudio = true
                         }
                         .buttonStyle(.bordered)
+                        .tint(Color.ink)
+                        .foregroundStyle(Color.ink)
+                        if let audioName = person.audioName {
+                            Text(audioName)
+                                .font(.footnote)
+                                .foregroundStyle(Color.ink)
+                        }
                     }
+                }
+                Button(model.examining ? "Examining…" : "Examine audio and sync mouths") {
+                    model.examineAndSync()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color.ink)
+                .disabled(model.examining)
+                if let progress = model.examineProgress {
+                    ProgressView(value: progress)
+                        .tint(Color.ink)
                 }
                 HStack {
                     Button(playing ? "Pause" : "Play") {
                         if !playing && !model.hasAudio {
-                            model.note = "Load audio for a person first."
+                            model.note = model.people.contains { $0.audioURL != nil }
+                                ? "Press Examine audio and sync mouths first."
+                                : "Load audio for a person first."
                             return
                         }
                         playing.toggle()
@@ -209,6 +230,8 @@ struct ContentView: View {
                         .tint(Color.ink)
                     Button("Export picture") { exportPNG() }
                         .buttonStyle(.bordered)
+                        .tint(Color.ink)
+                        .foregroundStyle(Color.ink)
                     Button(busy ? "Exporting…" : "Export movie") { exportMovie() }
                         .buttonStyle(.borderedProminent)
                         .tint(Color.sienna)
@@ -251,9 +274,13 @@ struct ContentView: View {
                     }
                 }
                 .pickerStyle(.menu)
+                .tint(Color.ink)
+                .foregroundStyle(Color.ink)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Button("Add new", action: add)
                     .buttonStyle(.bordered)
+                    .tint(Color.ink)
+                    .foregroundStyle(Color.ink)
             }
             Text(active ? "\(title) is on. Only this can be moved." : "Off.")
                 .font(.footnote)
