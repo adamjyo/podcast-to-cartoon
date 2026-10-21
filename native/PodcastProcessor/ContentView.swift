@@ -5,6 +5,8 @@ struct ContentView: View {
     @State private var model = EditorModel()
     @State private var playing = false
     @State private var importer: EditLayer?
+    @State private var audioPerson: String?
+    @State private var showAudio = false
     @State private var pngFile: PNGFile?
     @State private var movieFile: MovieFile?
     @State private var showPNG = false
@@ -35,15 +37,30 @@ struct ContentView: View {
                 }
             }
         }
+        .fileImporter(isPresented: $showAudio, allowedContentTypes: [.wav, .mp3, .mpeg4Audio, .aiff, .audio]) { result in
+            defer { audioPerson = nil }
+            guard let personID = audioPerson else { return }
+            if case .success(let url) = result {
+                model.loadAudio(from: url, personID: personID)
+            }
+        }
         .fileExporter(isPresented: $showPNG, document: pngFile, contentType: .png, defaultFilename: "scene.png") { _ in }
         .fileExporter(isPresented: $showMovie, document: movieFile, contentType: .mpeg4Movie, defaultFilename: "scene.mp4") { _ in }
         .task(id: playing) {
-            guard playing else { return }
-            var index = 0
+            guard playing else {
+                model.stopAudio()
+                return
+            }
+            model.startAudio()
+            let start = Date()
             while !Task.isCancelled && playing {
-                model.mouth = EditorModel.shapes[index % EditorModel.shapes.count]
-                index += 1
-                try? await Task.sleep(for: .milliseconds(160))
+                let elapsed = Date().timeIntervalSince(start)
+                model.time = elapsed
+                if model.audioFinished(elapsed) {
+                    playing = false
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(80))
             }
         }
     }
@@ -81,7 +98,7 @@ struct ContentView: View {
             let fit = fitted(geo.size)
             ZStack {
                 Color.ink
-                if let frame = model.frame(shape: model.mouth) {
+                if let frame = model.frame(at: model.time) {
                     Image(decorative: frame, scale: 1)
                         .resizable()
                         .interpolation(.high)
@@ -120,19 +137,32 @@ struct ContentView: View {
                     .font(.subheadline)
                     .foregroundStyle(Color.ink.opacity(0.75))
                 ForEach(model.people) { person in
-                    Toggle(person.name, isOn: Binding(
-                        get: { person.isOn },
-                        set: { value in
-                            if let index = model.people.firstIndex(where: { $0.id == person.id }) {
-                                model.people[index].isOn = value
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle(person.name, isOn: Binding(
+                            get: { person.isOn },
+                            set: { value in
+                                if let index = model.people.firstIndex(where: { $0.id == person.id }) {
+                                    model.people[index].isOn = value
+                                }
                             }
+                        ))
+                        .tint(Color.sienna)
+                        .foregroundStyle(Color.ink)
+                        Button(person.audioName ?? "Load audio") {
+                            audioPerson = person.id
+                            showAudio = true
                         }
-                    ))
-                    .tint(Color.sienna)
-                    .foregroundStyle(Color.ink)
+                        .buttonStyle(.bordered)
+                    }
                 }
                 HStack {
-                    Button(playing ? "Pause" : "Play") { playing.toggle() }
+                    Button(playing ? "Pause" : "Play") {
+                        if !playing && !model.hasAudio {
+                            model.note = "Load audio for a person first."
+                            return
+                        }
+                        playing.toggle()
+                    }
                         .buttonStyle(.borderedProminent)
                         .tint(Color.ink)
                     Button("Export picture") { exportPNG() }

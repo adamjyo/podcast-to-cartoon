@@ -28,6 +28,8 @@ struct PersonItem: Identifiable {
     var body: CGImage
     var mouths: [String: CGImage]
     var isOn: Bool
+    var audioName: String?
+    var levels: [Float] = []
 }
 
 enum EditLayer {
@@ -46,8 +48,9 @@ final class EditorModel {
     var backgroundID = "coffee"
     var foregroundID = "none"
     var editLayer: EditLayer = .background
-    var mouth = "closed"
+    var time: TimeInterval = 0
     var note: String?
+    private var players: [String: AVAudioPlayer] = [:]
 
     private var dragStart: CGPoint?
     private var dragOrigin: (x: Double, y: Double, scale: Double)?
@@ -157,7 +160,7 @@ final class EditorModel {
         resizing = false
     }
 
-    func frame(shape: String) -> CGImage? {
+    func frame(at time: TimeInterval) -> CGImage? {
         let width = Int(Self.scene.width)
         let height = Int(Self.scene.height)
         guard let ctx = CGContext(
@@ -169,15 +172,13 @@ final class EditorModel {
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return nil }
-        ctx.translateBy(x: 0, y: CGFloat(height))
-        ctx.scaleBy(x: 1, y: -1)
         let canvas = Self.scene
         ctx.setFillColor(CGColor(srgbRed: 0.11, green: 0.14, blue: 0.13, alpha: 1))
         ctx.fill(CGRect(origin: .zero, size: canvas))
         ctx.saveGState()
         ctx.clip(to: CGRect(origin: .zero, size: canvas))
         if let background {
-            ctx.draw(background.image, in: coverRect(background.image, centerX: background.x, centerY: background.y, scale: background.scale, canvas: canvas))
+            ctx.draw(background.image, in: placed(coverRect(background.image, centerX: background.x, centerY: background.y, scale: background.scale, canvas: canvas)))
         }
         let visible = people.filter(\.isOn)
         for (index, person) in visible.enumerated() {
@@ -185,12 +186,13 @@ final class EditorModel {
             let bodyW = bodyH * CGFloat(person.body.width) / CGFloat(max(1, person.body.height))
             let cx = (CGFloat(index) + 0.5) / CGFloat(max(1, visible.count)) * canvas.width
             let rect = CGRect(x: cx - bodyW / 2, y: canvas.height * 0.46 - bodyH / 2, width: bodyW, height: bodyH)
-            ctx.draw(person.body, in: rect)
+            ctx.draw(person.body, in: placed(rect))
+            let shape = mouthShape(person, time)
             if let mouth = person.mouths[shape] ?? person.mouths["closed"] {
                 let mw = bodyW * 0.14
                 let mh = mw * CGFloat(mouth.height) / CGFloat(max(1, mouth.width))
                 let mouthRect = CGRect(x: rect.minX + bodyW * 0.5 - mw / 2, y: rect.minY + bodyH * 0.34, width: mw, height: mh)
-                ctx.draw(mouth, in: mouthRect)
+                ctx.draw(mouth, in: placed(mouthRect))
             }
         }
         if let foreground {
@@ -202,24 +204,120 @@ final class EditorModel {
                 width: fw,
                 height: fh
             )
-            ctx.draw(foreground.image, in: rect)
+            let drawn = placed(rect)
+            ctx.draw(foreground.image, in: drawn)
             if editLayer == .foreground {
                 ctx.setStrokeColor(CGColor(srgbRed: 0.77, green: 0.36, blue: 0.15, alpha: 1))
                 ctx.setLineWidth(4)
-                ctx.stroke(rect)
+                ctx.stroke(drawn)
             }
         }
         ctx.restoreGState()
         if editLayer == .background {
-            let handle = handleRect()
             ctx.setFillColor(CGColor(srgbRed: 0.77, green: 0.36, blue: 0.15, alpha: 1))
-            ctx.fill(handle)
+            ctx.fill(placed(handleRect()))
         }
         return ctx.makeImage()
     }
 
+    var hasAudio: Bool {
+        people.contains { $0.isOn && !$0.levels.isEmpty }
+    }
+
+    func loadAudio(from url: URL, personID: String) {
+        let allowed = url.startAccessingSecurityScopedResource()
+        defer { if allowed { url.stopAccessingSecurityScopedResource() } }
+        let copy = FileManager.default.temporaryDirectory.appendingPathComponent("audio-\(personID)-\(url.lastPathComponent)")
+        do {
+            if FileManager.default.fileExists(atPath: copy.path) {
+                try FileManager.default.removeItem(at: copy)
+            }
+            try FileManager.default.copyItem(at: url, to: copy)
+            let levels = try Self.levels(in: copy)
+            let player = try AVAudioPlayer(contentsOf: copy)
+            player.prepareToPlay()
+            if let index = people.firstIndex(where: { $0.id == personID }) {
+                people[index].levels = levels
+                people[index].audioName = url.deletingPathExtension().lastPathComponent
+            }
+            players[personID] = player
+            note = nil
+        } catch {
+            note = "Could not read that audio. Use a wav, mp3, or m4a file."
+        }
+    }
+
+    func startAudio() {
+        #if os(iOS)
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        try? AVAudioSession.sharedInstance().setActive(true)
+        #endif
+        time = 0
+        for person in people where person.isOn {
+            guard let player = players[person.id] else { continue }
+            player.currentTime = 0
+            player.play()
+        }
+    }
+
+    func stopAudio() {
+        for player in players.values {
+            player.pause()
+        }
+    }
+
+    func audioFinished(_ elapsed: TimeInterval) -> Bool {
+        let durations = people.filter(\.isOn).compactMap { players[$0.id]?.duration }.filter { $0 > 0 }
+        guard let longest = durations.max() else { return true }
+        return elapsed >= longest
+    }
+
+    private func mouthShape(_ person: PersonItem, _ time: TimeInterval) -> String {
+        guard !person.levels.isEmpty else { return "closed" }
+        let index = min(person.levels.count - 1, max(0, Int(time / 0.08)))
+        switch person.levels[index] {
+        case ..<0.06: return "closed"
+        case ..<0.16: return "small"
+        case ..<0.32: return "medium"
+        case ..<0.50: return "round"
+        case ..<0.72: return "wide"
+        default: return "teeth"
+        }
+    }
+
+    private static func levels(in url: URL) throws -> [Float] {
+        let file = try AVAudioFile(forReading: url)
+        let format = file.processingFormat
+        let capacity = AVAudioFrameCount(file.length)
+        guard capacity > 0, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return [] }
+        try file.read(into: buffer)
+        guard let channels = buffer.floatChannelData else { return [] }
+        let frames = Int(buffer.frameLength)
+        let hop = max(1, Int(format.sampleRate * 0.08))
+        var levels: [Float] = []
+        levels.reserveCapacity(frames / hop + 1)
+        var index = 0
+        while index < frames {
+            let end = min(frames, index + hop)
+            var sum: Float = 0
+            for frame in index..<end {
+                let sample = channels[0][frame]
+                sum += sample * sample
+            }
+            levels.append(sqrt(sum / Float(end - index)))
+            index = end
+        }
+        let peak = levels.max() ?? 0
+        guard peak > 0.00001 else { return levels }
+        return levels.map { min(1, $0 / peak) }
+    }
+
+    private func placed(_ rect: CGRect) -> CGRect {
+        CGRect(x: rect.minX, y: Self.scene.height - rect.maxY, width: rect.width, height: rect.height)
+    }
+
     func pngData() -> Data? {
-        guard let image = frame(shape: mouth) else { return nil }
+        guard let image = frame(at: time) else { return nil }
         let data = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(dest, image, nil)
@@ -247,13 +345,15 @@ final class EditorModel {
         guard writer.startWriting() else { throw writer.error ?? CocoaError(.fileWriteUnknown) }
         writer.startSession(atSourceTime: .zero)
         let fps = 12
-        let frames = 48
+        let longest = people.filter(\.isOn).map { Double($0.levels.count) * 0.08 }.max() ?? 0
+        let duration = longest > 0.2 ? longest : 4
+        let frames = max(1, Int(duration * Double(fps)))
         for index in 0..<frames {
             while !input.isReadyForMoreMediaData {
                 Thread.sleep(forTimeInterval: 0.002)
             }
-            let shape = Self.shapes[(index / 2) % Self.shapes.count]
-            guard let image = frame(shape: shape), let buffer = pixelBuffer(from: image) else { continue }
+            let sample = Double(index) / Double(fps)
+            guard let image = frame(at: sample), let buffer = pixelBuffer(from: image) else { continue }
             let time = CMTime(value: CMTimeValue(index), timescale: CMTimeScale(fps))
             if !adaptor.append(buffer, withPresentationTime: time) {
                 throw writer.error ?? CocoaError(.fileWriteUnknown)
