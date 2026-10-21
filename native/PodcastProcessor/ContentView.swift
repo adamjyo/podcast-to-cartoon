@@ -268,6 +268,9 @@ struct ContentView: View {
                 if let progress = model.exportProgress {
                     ProgressView(value: progress)
                         .tint(Color.sienna)
+                    Text("Exporting \(Int((progress * 100).rounded()))%")
+                        .font(.footnote.monospacedDigit())
+                        .foregroundStyle(Color.ink)
                 }
                 if let note = model.note {
                     Text(note)
