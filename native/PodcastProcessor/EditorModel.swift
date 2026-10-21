@@ -34,6 +34,7 @@ struct PersonItem: Identifiable {
     var mouthX: Double
     var mouthY: Double
     var mouthScale: Double
+    var mouthAngle: Double = 0
     var audioName: String?
     var audioURL: URL?
     var volume: Double = 1
@@ -67,6 +68,7 @@ final class EditorModel {
     var exportProgress: Double?
     private var players: [String: AVAudioPlayer] = [:]
 
+    private var rotating = false
     private var dragStart: CGPoint?
     private var dragOrigin: (x: Double, y: Double, scale: Double)?
     private var dragSubject: DragSubject?
@@ -213,14 +215,27 @@ final class EditorModel {
         for person in people.filter(\.isOn).reversed() {
             let shape = mouthShape(person, time)
             guard let mouth = mouthRect(person, shape: shape) else { continue }
-            let corner = handle(for: mouth, size: 16)
-            if corner.contains(point) || mouth.contains(point) {
+            let corner = handle(for: mouth, size: 16, angle: person.mouthAngle)
+            let knob = rotateHandle(for: mouth, angle: person.mouthAngle)
+            if unlockedMouthID == person.id && knob.contains(point) {
+                selectedPersonID = person.id
+                selectedIsMouth = true
+                clickMouthID = person.id
+                rotating = true
+                resizing = false
+                dragSubject = .mouth(person.id)
+                dragStart = point
+                dragOrigin = (person.mouthX, person.mouthY, person.mouthScale)
+                return
+            }
+            if corner.contains(point) || contains(mouth, angle: person.mouthAngle, point: point) {
                 selectedPersonID = person.id
                 clickMouthID = person.id
                 dragStart = point
                 if unlockedMouthID == person.id {
                     selectedIsMouth = true
                     resizing = corner.contains(point)
+                    rotating = false
                     dragSubject = .mouth(person.id)
                     dragOrigin = (person.mouthX, person.mouthY, person.mouthScale)
                 }
@@ -247,6 +262,11 @@ final class EditorModel {
         if case .mouth(let id) = dragSubject {
             guard let person = people.first(where: { $0.id == id }) else { return }
             let body = bodyRect(person)
+            if rotating, let lips = mouthRect(person, shape: mouthShape(person, time)) {
+                let angle = atan2(point.x - lips.midX, lips.midY - point.y) * 180 / .pi
+                setMouthAngle(id, angle)
+                return
+            }
             let dx = Double(point.x - start.x) / Double(max(1, body.width)) * 100
             let dy = Double(point.y - start.y) / Double(max(1, body.height)) * 100
             if resizing {
@@ -277,14 +297,16 @@ final class EditorModel {
         dragOrigin = nil
         dragSubject = nil
         resizing = false
+        rotating = false
         clickMouthID = nil
     }
 
     func finishDrag(at point: CGPoint) {
         let moved = dragStart.map { hypot($0.x - point.x, $0.y - point.y) } ?? 999
         let mouthID = clickMouthID
+        let turned = rotating || resizing
         endDrag()
-        guard moved < 40, let mouthID else { return }
+        guard !turned, moved < 40, let mouthID else { return }
         let now = Date()
         if let last = lastMouthClick, last.id == mouthID, now.timeIntervalSince(last.time) < 0.45 {
             if unlockedMouthID == mouthID {
@@ -295,7 +317,7 @@ final class EditorModel {
                 unlockedMouthID = mouthID
                 selectedPersonID = mouthID
                 selectedIsMouth = true
-                note = "Drag this mouth inside the person. Double-click it again to lock it."
+                note = "Drag the mouth to move it. Drag the circle to turn it. Double-click it again to lock it."
             }
             lastMouthClick = nil
         } else {
@@ -330,15 +352,22 @@ final class EditorModel {
             let shape = mouthShape(person, time)
             if let lips = mouthRect(person, shape: shape) {
                 if let mouth = person.mouths[shape] ?? person.mouths["closed"] {
-                    ctx.draw(mouth, in: placed(lips))
+                    drawTurned(mouth, in: lips, angle: person.mouthAngle, context: ctx)
                 }
                 if !editForeground && !editBackground && unlockedMouthID == person.id {
                     let selected = person.id == selectedPersonID && selectedIsMouth
                     ctx.setStrokeColor(CGColor(srgbRed: 0.77, green: 0.36, blue: 0.15, alpha: 1))
                     ctx.setLineWidth(selected ? 4 : 2)
-                    ctx.stroke(placed(lips))
+                    strokeTurned(lips, angle: person.mouthAngle, context: ctx)
                     ctx.setFillColor(CGColor(srgbRed: 0.77, green: 0.36, blue: 0.15, alpha: 1))
-                    ctx.fill(placed(handle(for: lips, size: 16)))
+                    ctx.fill(placed(handle(for: lips, size: 16, angle: person.mouthAngle)))
+                    let knob = rotateHandle(for: lips, angle: person.mouthAngle)
+                    let dot = placed(knob)
+                    ctx.setFillColor(CGColor(srgbRed: 0.95, green: 0.93, blue: 0.86, alpha: 1))
+                    ctx.fillEllipse(in: dot)
+                    ctx.setStrokeColor(CGColor(srgbRed: 0.77, green: 0.36, blue: 0.15, alpha: 1))
+                    ctx.setLineWidth(3)
+                    ctx.strokeEllipse(in: dot)
                 }
             }
             if !editForeground && !editBackground && person.id == selectedPersonID && !selectedIsMouth {
@@ -840,9 +869,17 @@ private struct ExportFailure: LocalizedError {
         people[index].mouthScale = next.mouthScale
     }
 
+    func setMouthAngle(_ id: String, _ angle: Double) {
+        guard let index = people.firstIndex(where: { $0.id == id }) else { return }
+        var degrees = angle.truncatingRemainder(dividingBy: 360)
+        if degrees > 180 { degrees -= 360 }
+        if degrees < -180 { degrees += 360 }
+        people[index].mouthAngle = degrees
+    }
+
     func saveFaces() {
         let faces = people.map {
-            SavedFace(id: $0.id, x: $0.x, y: $0.y, scale: $0.scale, mouthX: $0.mouthX, mouthY: $0.mouthY, mouthScale: $0.mouthScale)
+            SavedFace(id: $0.id, x: $0.x, y: $0.y, scale: $0.scale, mouthX: $0.mouthX, mouthY: $0.mouthY, mouthScale: $0.mouthScale, mouthAngle: $0.mouthAngle)
         }
         guard let data = try? JSONEncoder().encode(faces) else { return }
         UserDefaults.standard.set(data, forKey: "saved-faces-v6")
@@ -870,6 +907,7 @@ private struct ExportFailure: LocalizedError {
                 people[index].mouthX = face.mouthX
                 people[index].mouthY = face.mouthY
                 people[index].mouthScale = face.mouthScale
+                people[index].mouthAngle = face.mouthAngle
             }
         }
     }
@@ -909,8 +947,61 @@ private struct ExportFailure: LocalizedError {
         )
     }
 
-    private func handle(for rect: CGRect, size: CGFloat = 36) -> CGRect {
-        CGRect(x: rect.maxX - size, y: rect.maxY - size, width: size, height: size)
+    private func handle(for rect: CGRect, size: CGFloat = 36, angle: Double = 0) -> CGRect {
+        let center = turned(CGPoint(x: rect.width / 2 - size / 2, y: rect.height / 2 - size / 2), around: rect, angle: angle)
+        return CGRect(x: center.x - size / 2, y: center.y - size / 2, width: size, height: size)
+    }
+
+    private func rotateHandle(for rect: CGRect, angle: Double) -> CGRect {
+        let center = turned(CGPoint(x: 0, y: -(rect.height / 2 + 22)), around: rect, angle: angle)
+        return CGRect(x: center.x - 9, y: center.y - 9, width: 18, height: 18)
+    }
+
+    private func turned(_ local: CGPoint, around rect: CGRect, angle: Double) -> CGPoint {
+        let rad = angle * .pi / 180
+        let c = cos(rad)
+        let s = sin(rad)
+        return CGPoint(
+            x: rect.midX + local.x * c - local.y * s,
+            y: rect.midY + local.x * s + local.y * c
+        )
+    }
+
+    private func contains(_ rect: CGRect, angle: Double, point: CGPoint) -> Bool {
+        let rad = -angle * .pi / 180
+        let c = cos(rad)
+        let s = sin(rad)
+        let dx = point.x - rect.midX
+        let dy = point.y - rect.midY
+        let x = dx * c + dy * s
+        let y = -dx * s + dy * c
+        return abs(x) <= rect.width / 2 && abs(y) <= rect.height / 2
+    }
+
+    private func drawTurned(_ image: CGImage, in rect: CGRect, angle: Double, context ctx: CGContext) {
+        let box = placed(rect)
+        ctx.saveGState()
+        ctx.translateBy(x: box.midX, y: box.midY)
+        ctx.rotate(by: -CGFloat(angle) * .pi / 180)
+        ctx.draw(image, in: CGRect(x: -box.width / 2, y: -box.height / 2, width: box.width, height: box.height))
+        ctx.restoreGState()
+    }
+
+    private func strokeTurned(_ rect: CGRect, angle: Double, context ctx: CGContext) {
+        let corners = [
+            turned(CGPoint(x: -rect.width / 2, y: -rect.height / 2), around: rect, angle: angle),
+            turned(CGPoint(x: rect.width / 2, y: -rect.height / 2), around: rect, angle: angle),
+            turned(CGPoint(x: rect.width / 2, y: rect.height / 2), around: rect, angle: angle),
+            turned(CGPoint(x: -rect.width / 2, y: rect.height / 2), around: rect, angle: angle),
+        ]
+        ctx.beginPath()
+        let first = CGPoint(x: corners[0].x, y: Self.scene.height - corners[0].y)
+        ctx.move(to: first)
+        for corner in corners.dropFirst() {
+            ctx.addLine(to: CGPoint(x: corner.x, y: Self.scene.height - corner.y))
+        }
+        ctx.closePath()
+        ctx.strokePath()
     }
 
     private func handleRect() -> CGRect {
@@ -972,6 +1063,46 @@ struct SavedFace: Codable {
     var mouthX: Double
     var mouthY: Double
     var mouthScale: Double
+    var mouthAngle: Double
+
+    enum CodingKeys: String, CodingKey {
+        case id, x, y, scale, mouthX, mouthY, mouthScale, mouthAngle
+    }
+
+    init(id: String, x: Double, y: Double, scale: Double, mouthX: Double, mouthY: Double, mouthScale: Double, mouthAngle: Double) {
+        self.id = id
+        self.x = x
+        self.y = y
+        self.scale = scale
+        self.mouthX = mouthX
+        self.mouthY = mouthY
+        self.mouthScale = mouthScale
+        self.mouthAngle = mouthAngle
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        x = try values.decode(Double.self, forKey: .x)
+        y = try values.decode(Double.self, forKey: .y)
+        scale = try values.decode(Double.self, forKey: .scale)
+        mouthX = try values.decode(Double.self, forKey: .mouthX)
+        mouthY = try values.decode(Double.self, forKey: .mouthY)
+        mouthScale = try values.decode(Double.self, forKey: .mouthScale)
+        mouthAngle = try values.decodeIfPresent(Double.self, forKey: .mouthAngle) ?? 0
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(x, forKey: .x)
+        try values.encode(y, forKey: .y)
+        try values.encode(scale, forKey: .scale)
+        try values.encode(mouthX, forKey: .mouthX)
+        try values.encode(mouthY, forKey: .mouthY)
+        try values.encode(mouthScale, forKey: .mouthScale)
+        try values.encode(mouthAngle, forKey: .mouthAngle)
+    }
 }
 
 struct PNGFile: FileDocument {

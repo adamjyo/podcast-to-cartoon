@@ -182,7 +182,7 @@ struct ContentView: View {
                      ? "Foreground is on. Only that layer can be moved."
                      : model.editBackground
                      ? "Background is on. Drag the picture. Drag the orange corner to resize."
-                     : "Both layers are off. Double-click a mouth to move it inside that person. Double-click it again to lock it.")
+                     : "Both layers are off. Double-click a mouth to move it. Drag the circle above it to turn it.")
                     .font(.subheadline)
                     .foregroundStyle(Color.ink.opacity(0.75))
                 ForEach(model.people) { person in
@@ -224,6 +224,20 @@ struct ContentView: View {
                             ), in: 0...1)
                             .tint(Color.sienna)
                             Text("\(Int((person.volume * 100).rounded()))%")
+                                .font(.footnote.monospacedDigit())
+                                .foregroundStyle(Color.ink)
+                                .frame(width: 40, alignment: .trailing)
+                        }
+                        HStack(spacing: 8) {
+                            Text("Mouth turn")
+                                .font(.footnote)
+                                .foregroundStyle(Color.ink.opacity(0.7))
+                            Slider(value: Binding(
+                                get: { person.mouthAngle },
+                                set: { model.setMouthAngle(person.id, $0) }
+                            ), in: -90...90)
+                            .tint(Color.sienna)
+                            Text("\(Int(person.mouthAngle.rounded()))°")
                                 .font(.footnote.monospacedDigit())
                                 .foregroundStyle(Color.ink)
                                 .frame(width: 40, alignment: .trailing)
