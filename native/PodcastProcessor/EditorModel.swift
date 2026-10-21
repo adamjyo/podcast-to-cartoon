@@ -37,7 +37,6 @@ struct PersonItem: Identifiable {
     var audioName: String?
     var audioURL: URL?
     var levels: [Float] = []
-    var levels: [Float] = []
 }
 
 enum EditLayer {
