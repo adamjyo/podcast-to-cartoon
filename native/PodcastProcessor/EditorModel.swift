@@ -31,6 +31,9 @@ struct PersonItem: Identifiable {
     var x: Double
     var y: Double
     var scale: Double
+    var mouthX: Double
+    var mouthY: Double
+    var mouthScale: Double
     var audioName: String?
     var levels: [Float] = []
 }
@@ -77,6 +80,14 @@ final class EditorModel {
             ("abby-r", "Abby R"),
             ("abby-s", "Abby S"),
         ]
+        let places: [String: (Double, Double, Double)] = [
+            "adam": (50, 30, 12),
+            "ben": (50, 25, 9),
+            "corey": (50, 39, 13),
+            "emily": (50, 31, 10),
+            "abby-r": (50, 26, 11),
+            "abby-s": (48, 32, 10),
+        ]
         people = names.enumerated().compactMap { index, pair in
             let (id, name) = pair
             guard let body = Self.bundleImage("person-\(id)", ext: "png") else { return nil }
@@ -87,6 +98,7 @@ final class EditorModel {
                 }
             }
             let count = Double(names.count)
+            let place = places[id] ?? (50, 34, 14)
             return PersonItem(
                 id: id,
                 name: name,
@@ -95,7 +107,10 @@ final class EditorModel {
                 isOn: true,
                 x: (Double(index) + 0.5) / count * 100,
                 y: 46,
-                scale: 72
+                scale: 72,
+                mouthX: place.0,
+                mouthY: place.1,
+                mouthScale: place.2
             )
         }
         if let coffee = Self.bundleImage("coffee-shop", ext: "jpg") {
@@ -246,9 +261,14 @@ final class EditorModel {
             ctx.draw(person.body, in: placed(rect))
             let shape = mouthShape(person, time)
             if let mouth = person.mouths[shape] ?? person.mouths["closed"] {
-                let mw = rect.width * 0.14
+                let mw = rect.width * CGFloat(person.mouthScale / 100)
                 let mh = mw * CGFloat(mouth.height) / CGFloat(max(1, mouth.width))
-                let mouthRect = CGRect(x: rect.minX + rect.width * 0.5 - mw / 2, y: rect.minY + rect.height * 0.34, width: mw, height: mh)
+                let mouthRect = CGRect(
+                    x: rect.minX + rect.width * CGFloat(person.mouthX / 100) - mw / 2,
+                    y: rect.minY + rect.height * CGFloat(person.mouthY / 100) - mh / 2,
+                    width: mw,
+                    height: mh
+                )
                 ctx.draw(mouth, in: placed(mouthRect))
             }
             if !editForeground && !editBackground && person.id == selectedPersonID {
