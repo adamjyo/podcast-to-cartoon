@@ -4,7 +4,8 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @State private var model = EditorModel()
     @State private var playing = false
-    @State private var importer: EditLayer?
+    @State private var showImage = false
+    @State private var imageLayer: EditLayer = .background
     @State private var audioPerson: String?
     @State private var showAudio = false
     @State private var pngFile: PNGFile?
@@ -23,17 +24,24 @@ struct ContentView: View {
             }
         }
         .background(Color.paper)
-        .fileImporter(isPresented: Binding(
-            get: { importer != nil },
-            set: { if !$0 { importer = nil } }
-        ), allowedContentTypes: [.image]) { result in
-            guard let layer = importer else { return }
-            if case .success(let url) = result {
+        .fileImporter(
+            isPresented: $showImage,
+            allowedContentTypes: [.png, .jpeg, .heic, .gif, .tiff, .bmp, .webP, .image],
+            allowsMultipleSelection: false
+        ) { result in
+            let layer = imageLayer
+            switch result {
+            case .failure:
+                model.note = "Could not open the picture picker."
+            case .success(let url):
                 let allowed = url.startAccessingSecurityScopedResource()
                 defer { if allowed { url.stopAccessingSecurityScopedResource() } }
-                if let data = try? Data(contentsOf: url) {
+                do {
+                    let data = try Data(contentsOf: url)
                     let name = url.deletingPathExtension().lastPathComponent
                     model.addImage(data: data, name: name.isEmpty ? "New" : name, layer: layer)
+                } catch {
+                    model.note = "Could not read that picture."
                 }
             }
         }
@@ -66,31 +74,47 @@ struct ContentView: View {
     }
 
     private var sceneColumn: some View {
-        VStack(spacing: 12) {
-            scene
-                .aspectRatio(16 / 9, contentMode: .fit)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        GeometryReader { column in
+            VStack(spacing: 12) {
+                scene
+                    .frame(height: max(220, column.size.height * 0.62))
+                    .padding(.horizontal, 12)
+                    .padding(.top, 12)
+                ScrollView {
+                    layerBar(
+                        title: "Foreground",
+                        active: model.editForeground,
+                        selection: model.foregroundID,
+                        options: [("none", "None")] + model.foregrounds.map { ($0.id, $0.name) },
+                        choose: { model.chooseForeground($0) },
+                        add: {
+                            imageLayer = .foreground
+                            showImage = true
+                        },
+                        toggle: { model.setForegroundEditing($0) }
+                    )
+                    layerBar(
+                        title: "Background",
+                        active: model.editBackground,
+                        selection: model.backgroundID,
+                        options: model.backgrounds.map { ($0.id, $0.name) },
+                        choose: { model.chooseBackground($0) },
+                        add: {
+                            imageLayer = .background
+                            showImage = true
+                        },
+                        toggle: { model.setBackgroundEditing($0) }
+                    )
+                    if let note = model.note {
+                        Text(note)
+                            .font(.subheadline)
+                            .foregroundStyle(Color.sienna)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
                 .padding(.horizontal, 12)
-                .padding(.top, 12)
-            layerBar(
-                title: "Foreground",
-                active: model.editForeground,
-                selection: model.foregroundID,
-                options: [("none", "None")] + model.foregrounds.map { ($0.id, $0.name) },
-                choose: { model.chooseForeground($0) },
-                add: { importer = .foreground },
-                toggle: { model.setForegroundEditing($0) }
-            )
-            layerBar(
-                title: "Background",
-                active: model.editBackground,
-                selection: model.backgroundID,
-                options: model.backgrounds.map { ($0.id, $0.name) },
-                choose: { model.chooseBackground($0) },
-                add: { importer = .background },
-                toggle: { model.setBackgroundEditing($0) }
-            )
-            .padding(.bottom, 12)
+                .padding(.bottom, 12)
+            }
         }
         .padding(.horizontal, 12)
     }

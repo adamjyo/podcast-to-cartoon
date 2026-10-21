@@ -177,6 +177,7 @@ final class EditorModel {
             backgroundID = item.id
             setBackgroundEditing(true)
         }
+        note = "Added \(name)."
     }
 
     func drag(to point: CGPoint) {
@@ -642,13 +643,8 @@ final class EditorModel {
     }
 
     private static func image(from data: Data) -> CGImage? {
-        #if os(macOS)
-        guard let image = NSImage(data: data) else { return nil }
-        var rect = CGRect(origin: .zero, size: image.size)
-        return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
-        #else
-        return UIImage(data: data)?.cgImage
-        #endif
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 }
 
