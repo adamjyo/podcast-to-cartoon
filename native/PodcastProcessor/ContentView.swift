@@ -33,7 +33,11 @@ struct ContentView: View {
             switch result {
             case .failure:
                 model.note = "Could not open the picture picker."
-            case .success(let url):
+            case .success(let urls):
+                guard let url = urls.first else {
+                    model.note = "No picture was selected."
+                    return
+                }
                 let allowed = url.startAccessingSecurityScopedResource()
                 defer { if allowed { url.stopAccessingSecurityScopedResource() } }
                 do {
